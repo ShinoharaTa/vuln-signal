@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# ステージされた変更を gitleaks で検査し、秘密情報を含むコミットを止める。
+set -euo pipefail
+
+if command -v gitleaks >/dev/null 2>&1; then
+  GITLEAKS=gitleaks
+elif [ -x "$HOME/.local/bin/gitleaks" ]; then
+  GITLEAKS="$HOME/.local/bin/gitleaks"
+else
+  echo "gitleaks が見つからない。README の手順で入れてください" >&2
+  exit 1
+fi
+
+exec "$GITLEAKS" git --pre-commit --staged --redact --no-banner --config .gitleaks.toml

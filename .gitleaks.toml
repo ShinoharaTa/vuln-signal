@@ -1,0 +1,8 @@
+# gitleaks の設定。既定ルールをそのまま使い、例示ファイルだけ除外する。
+[extend]
+useDefault = true
+
+# v8.25.0 以降は [allowlist] ではなく [[allowlists]] を使う。
+[[allowlists]]
+description = "env.example は変数名の一覧で、値は空（秘密を含まない）"
+paths = ['''^env\.example$''']
