@@ -1,0 +1,21 @@
+# secrets
+.env
+.env.*
+!env.example
+.dev.vars*
+
+# local data
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# python
+__pycache__/
+.venv/
+*.pyc
+
+# node / wrangler
+node_modules/
+.wrangler/
+dist/
