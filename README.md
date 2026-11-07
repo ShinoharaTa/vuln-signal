@@ -28,6 +28,8 @@ git config core.hooksPath .githooks
 
 秘密情報は `~/.config/vuln-signal/env`（chmod 600）に置く。変数の一覧は [`env.example`](env.example)。`.env*` と `.dev.vars*` は `.gitignore` 済み。
 
+収集側（Python）の使い方は [`collector/README.md`](collector/README.md)。
+
 ## ライセンス
 
 - コード: MIT（[`LICENSE`](LICENSE)）
