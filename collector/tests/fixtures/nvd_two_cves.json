@@ -1,0 +1,128 @@
+{
+  "resultsPerPage": 2,
+  "startIndex": 0,
+  "totalResults": 2,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2099-01-02T00:00:00.000",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2099-0001",
+        "sourceIdentifier": "416baaa9-dc9f-4396-8d5f-8c081fb06d67",
+        "published": "2099-01-01T10:15:30.123",
+        "lastModified": "2099-01-01T12:00:00.456",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          {"lang": "es", "value": "Descripcion ficticia."},
+          {"lang": "en", "value": "Fictional out-of-bounds write in the example driver."},
+          {"lang": "en", "value": "Second English description (ignored)."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "cna@example.invalid",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM"
+              }
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH"
+              }
+            }
+          ],
+          "cvssMetricV40": [
+            {
+              "source": "cna@example.invalid",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "4.0",
+                "vectorString": "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+                "baseScore": 8.5,
+                "baseSeverity": "HIGH"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [{"lang": "en", "value": "CWE-787"}]
+          },
+          {
+            "source": "cna@example.invalid",
+            "type": "Secondary",
+            "description": [
+              {"lang": "en", "value": "NVD-CWE-noinfo"},
+              {"lang": "en", "value": "CWE-787"},
+              {"lang": "en", "value": "CWE-125"}
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:o:example:example_os:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "2.0"
+                  },
+                  {
+                    "vulnerable": false,
+                    "criteria": "cpe:2.3:h:example:example_board:-:*:*:*:*:*:*:*"
+                  },
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:example:example_driver:1.0:*:*:*:*:*:*:*"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:o:example:example_os:*:*:*:*:*:*:*:*"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [{"url": "https://example.invalid/advisory/0001", "source": "cna@example.invalid"}]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0002",
+        "sourceIdentifier": "cna@example.invalid",
+        "published": "2099-01-01T11:00:00.000",
+        "lastModified": "2099-01-01T11:00:00.000",
+        "vulnStatus": "Received",
+        "descriptions": [{"lang": "fr", "value": "Description fictive."}],
+        "metrics": {},
+        "references": []
+      }
+    }
+  ]
+}
