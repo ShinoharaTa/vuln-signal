@@ -14,7 +14,7 @@
 
 ### 範囲
 - 入力: 一次配信（NVD / CVE.org / KEV / GHSA / OSV / Node.js / ディストリ / EPSS）。ニュースサイト・ブログ記事は入力に使わない。
-- 出力: Web（Cloudflare Workers + D1、SSR）、配信チャネルは **Discord / RSS / メール**（§9.6）。
+- 出力: Web（Cloudflare Workers + D1、SSR）、配信チャネルは **RSS / Discord / Slack / メール**（§9.6）。RSS 以外の配信先は運営者がサーバー上の CLI で登録する（公開の登録フォームは置かない）。
 - 補助シグナル（PoC 公開・悪用報告）: 状況把握用。本文の情報源にはしない。X は v1 では使わない（§5・§7）。
 
 ### 成功条件（受け入れ条件の上位）
@@ -45,7 +45,7 @@ signal-digest は読んだだけで変更していない。以下はコードで
 | `llm/usage.py` + `usage_report.py` | ほぼそのままコピー | プロバイダ非依存の計上・予算上限。CVE でも同じ |
 | `llm/analyzer.py` のプロバイダ呼び出し層（Gemini 思考抑制・OpenRouter・Anthropic） | 呼び出し部分だけ切り出してコピー。RSS 向け `SYSTEM_PROMPT`・genre・sentiment は捨てる | 1,269 行のうち要るのは 1/3 程度（推測） |
 | `llm/copycheck.py` | コピー + 英文判定を調整（§6.4） | 生成文と一次文面の連続一致検査は CVE でも必要 |
-| `notifications/discord.py` / `webpush.py` | 後段でコピー | 配信チャネルが決まってから |
+| `notifications/discord.py` | 後段でコピー | Discord 配信に流用。Slack は Incoming Webhook で新規（形が近い）。`webpush.py` は使わない |
 | `docs/editorial-style.md` の書き方の節 | 文面を CVE 向けに書き直して流用 | 「先頭 2 文で何が起きたか・環境に何が変わるか」はそのまま使える |
 | `judge/` の考え方（質問を分けて confidence を見る、promptVersion、shadow→live、正解ラベルで評価） | **設計だけ流用**。コードは Jev 依存が強いので持ってこない | 緊急度の LLM 補足も shadow で始める |
 | `config.py`（pydantic-settings）、`db/session.py` | 型だけ流用 | |
@@ -272,7 +272,7 @@ P3 の kernel CVE は **週次「kernel CVE 件数」1 本**にまとめる（�
 | 20 | 名誉・ベンダー評価 | ○ 「対応が遅い」等の評価を書かない（editorial rule + LLM 検査） | — | 低 |
 | 21 | 個人情報（研究者クレジット等） | ○ 一次ソースの表示のまま。独自収集しない | — | 低 |
 | 22 | LLM 生成の表示 | ○ 記事ごとに明記 | — | 低 |
-| 24 | メール配信（購読者のアドレス） | △ ダブルオプトイン、全メールに配信停止リンク・送信者名・連絡先、アドレスは配信以外に使わない、プライバシーポリシーを /privacy に置く | 特定電子メール法（同意の記録・表示義務）と個人情報保護法の対応 → 総務省・消費者庁のガイドラインで確認（必要なら弁護士） | 低〜中。D1 の購読者テーブルの漏えい。アクセスは Worker binding のみ、公開 API に出さない |
+| 24 | メール配信（受信者のアドレス） | ○ 公開の登録フォームを置かず、運営者が CLI で登録（§9.6）。同意の日付・方法を必須で記録。全メールに送信者名・連絡先・配信停止の方法。アドレスは N100 のローカル DB だけに置き、D1・公開リポジトリには入れない | 特定電子メール法の同意記録と表示義務の細目 → 総務省のガイドラインで確認 | 低。N100 の DB ファイルの漏えい（chmod 600・バックアップの扱い） |
 | 23 | 免責表記の設置場所 | ○ フッタ常設 + /about + 記事末尾 | — | — |
 
 **ドメイン取得の判断基準（§9.5）**: 上表の「要確認」のうち **#2, #5, #7, #8, #19（サイト名の商標調査）** が「確認済み or 代替策で回避」になったとき。#24 はメール配信を始める前まで。それまでは `*.workers.dev` + `noindex` で運用する。
@@ -369,16 +369,36 @@ signal-digest-web は **コードの流用 ✗**（Next 14 + Prisma/PostgreSQL +
 
 ---
 
-### 9.6 配信チャネル（Discord / RSS / メール）
+### 9.6 配信チャネル（RSS / Discord / Slack / メール）
+**RSS 以外の配信先は、運営者が N100 上の CLI で追加・削除する**（Claude Code からコマンドを実行する運用）。公開の登録フォームは置かない。
+
 | チャネル | 実装 | 何を流すか | 費用 | 備考 |
 |---|---|---|---|---|
-| **RSS** | Worker が D1 から `/feed.xml`（全体）と `/feed/p0.xml`・`/feed/node.xml`・`/feed/linux.xml`（tier・スタック別）を SSR。Cache API で 5 分キャッシュ | 新規記事と tier が上がった続報 | $0 | 認証なし。購読者情報を持たない |
-| **Discord** | N100 の publish 後に Webhook へ投稿（signal-digest の `notifications/discord.py` を流用） | P0 は即時 1 件ずつ、P1 は 1 日 1 回のまとめ、tier が上がった続報 | $0 | Webhook URL は秘密情報（§8.1）。初期は運用者のサーバーだけ。公開招待は後で |
-| **メール** | 購読フォーム（Worker）→ D1 `subscriber`（ダブルオプトイン）。送信は N100 の publish 後にメール送信 API を呼ぶ | 既定は 1 日 1 回のまとめ（P0・P1・続報）。P0 即時は購読者が選ぶ | Resend 無料枠（月 3,000 通・1 日 100 通と記憶、**未確認**）／Amazon SES（$0.10/1,000 通、**未確認**）／Cloudflare Email Service（送信。提供状況・料金 **未確認**） | 特定電子メール法・個人情報（§7-24）。SPF / DKIM / DMARC のためドメイン取得後に開始。配信停止はワンクリック（List-Unsubscribe） |
+| **RSS** | Worker が D1 から `/feed.xml`（全体）と `/feed/p0.xml`・`/feed/node.xml`・`/feed/linux.xml`（tier・スタック別）を SSR。Cache API で 5 分キャッシュ | 新規記事と tier が上がった続報 | $0 | 誰でも購読できる唯一のチャネル。購読者情報を持たない |
+| **Discord** | Webhook へ投稿（signal-digest の `notifications/discord.py` を流用） | 配信先ごとの設定（下記） | $0 | Webhook URL は秘密情報 |
+| **Slack** | Incoming Webhook へ投稿（Block Kit。Discord と同じ組み立てから出し分け） | 同上 | $0 | Webhook URL は秘密情報。Slack アプリの作成はワークスペース側で行う |
+| **メール** | N100 からメール送信 API を呼ぶ | 同上（既定は日次まとめ） | Resend 無料枠（月 3,000 通・1 日 100 通と記憶、**未確認**）／Amazon SES（$0.10/1,000 通、**未確認**）／Cloudflare Email Service（提供状況・料金 **未確認**） | SPF / DKIM / DMARC のためドメイン取得後に開始 |
 
-- 送信は N100 の timer から行い、Workers は購読受付・確認・停止だけを担う（Worker から送る案は Cron と送信 API の秘密情報が Cloudflare 側にも要るため後回し）。
-- 二重配信防止: `delivery(channel, article_id, revision)` を作業 DB に記録（signal-digest の `notified_at` と同じ考え方）。
-- WebPush は v1 では入れない。
+**配信先の管理（CLI）**
+```
+vuln-signal channel add discord <webhook-url> --name ops --mode p0-instant
+vuln-signal channel add slack   <webhook-url> --name team --mode daily --stack node,linux
+vuln-signal channel add email   <address>     --name alice --mode daily --consent "2026-11-06 本人から口頭で同意"
+vuln-signal channel list                 # URL・アドレスは伏せ字で表示
+vuln-signal channel test <name>          # テスト投稿を 1 件送る
+vuln-signal channel pause|resume <name>
+vuln-signal channel remove <name>
+```
+- `--mode`: `p0-instant`（P0 と tier が上がった続報を即時）/ `daily`（1 日 1 回のまとめ。JST 7:00）/ `both`。`--stack`: `node` / `linux` / `distro` / `all`（既定）。
+- 保存先は **N100 のローカル作業 DB（SQLite）の `channel` テーブル**。D1 には置かない（送信は N100 から行うので Cloudflare 側に配信先を持つ理由が無い。漏えい面も小さくなる）。DB ファイルは chmod 600、リポジトリ外（`~/.local/share/vuln-signal/`）。
+- Webhook URL・メールアドレスはログに出さない。`list` は末尾 4 文字だけ表示。
+- `add` の直後に `test` を自動で送り、失敗したら登録しない（打ち間違いの検出）。
+- 送信失敗が連続 N 回（既定 5）で自動 pause し、運営者に Discord（運営用チャンネル）で知らせる。
+- 二重配信防止: `delivery(channel_id, article_id, revision)` を作業 DB に記録（signal-digest の `notified_at` と同じ考え方）。
+- **Claude からの操作**: リポジトリに `.claude/skills/channel/SKILL.md` を置き、上の CLI の使い方・確認手順（追加前に名前と mode を復唱、remove 前に `list` で対象確認）を書く。Claude は CLI を実行するだけで、DB を直接触らない。
+- WebPush は入れない。
+
+**メールの法的扱い（§7-24）**: 公開フォームが無いので「誰でも登録できる」状態にはならないが、特定電子メール法の同意は受信者本人から得る必要がある。`--consent` に同意の日付と方法を必須で記録する（同法の同意記録の保存義務）。各メールに送信者名・連絡先・配信停止の方法（運営者への返信または mailto の List-Unsubscribe）を入れる。停止依頼は運営者が `channel remove` で処理する。
 
 ### 9.7 サイト名
 「CVE」を含めない（§7-19）。候補（DNS で NS レコードが無いことだけ確認。**登録状況・商標は未確認**）:
@@ -478,7 +498,7 @@ signal-digest-web は **コードの流用 ✗**（Next 14 + Prisma/PostgreSQL +
 - **Phase 1（収集・判定、shadow）**: Python パッケージ `vuln_signal`（uv or Poetry）。モジュール: `sources/{nvd,kev,ghsa,epss,nodejs,redhat,ubuntu,debian}.py`（各 1 関数 `fetch_since(ts) -> list[Record]`）、`store/sqlite.py`（スキーマ §9.4 と同一）、`rules/tier.py`（§4.3〜4.5 を設定ファイルから読む）、`cli.py sync|judge|report`。systemd --user `vuln-signal-sync.timer`（30 分）。LLM・D1 書き込みはまだ無し。`report` で件数分布を出す。
 - **Phase 2（表示）**: `web/`（Hono + hono/jsx、wrangler）。D1 スキーマ適用、`/`（P0/P1 一覧）、`/cve/:id`、`/about`（規約表示・免責）、`/feed.xml`。N100 側に `publish` コマンド（D1 HTTP API batch、100 変数/クエリを守る）。workers.dev + noindex。
 - **Phase 3（LLM）**: usage.py / copycheck.py 移植、`llm/explain.py`、記事生成、`review_flag`。
-- **Phase 4（補助シグナル・通知）**: GitHub Search、Metasploit/nuclei、Exploit-DB CSV、Discord / メール配信（RSS は Phase 2）、Bluesky（疎通確認後）。
+- **Phase 4（補助シグナル・通知）**: GitHub Search、Metasploit/nuclei、Exploit-DB CSV、`channel` CLI と Discord / Slack / メール配信（RSS は Phase 2）、Bluesky（疎通確認後）。
 - **Phase 5（公開）**: 法的チェックリスト完了 → ドメイン → noindex 解除。
 
 ---
@@ -495,7 +515,7 @@ signal-digest-web は **コードの流用 ✗**（Next 14 + Prisma/PostgreSQL +
 - [ ] 作業 DB を SQLite にする（既存 PostgreSQL を触らない）方針でよいか。
 
 ### 決定が要る（Phase 4〜5 の前）
-- [x] 配信チャネルは Discord / RSS / メール（決定。§9.6）。メール送信サービスの選択。
+- [x] 配信チャネルは RSS / Discord / Slack / メール。RSS 以外は運営者が CLI で配信先を登録（決定。§9.6）。メール送信サービスの選択は未定。
 - [ ] 補助シグナルの範囲: GitHub + Metasploit/nuclei + Exploit-DB で開始するか。Bluesky / Mastodon を足すか。infosec.exchange のアカウントを作るか。**X は使わない**でよいか。
 - [x] PoC・エクスプロイトへのリンクは出さない（決定。§5.4・§7-17）。
 - [ ] 法的確認の実施者: EPSS（FIRST）、Debian、Ubuntu への問い合わせを誰が出すか。免責文を弁護士に見せるか。
