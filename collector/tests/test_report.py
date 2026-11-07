@@ -12,11 +12,12 @@ IN_WINDOW = "2099-01-09T12:00:00Z"
 OLD = "2099-01-05T00:00:00Z"
 
 
-def _add(store, cve_id, severity, source_identifier, observed_at):
+def _add(store, cve_id, severity, source_identifier, observed_at, published=None):
     base = load_fixture("nvd_two_cves.json")["vulnerabilities"][1]["cve"]
     cve = copy.deepcopy(base)
     cve["id"] = cve_id
     cve["sourceIdentifier"] = source_identifier
+    cve["published"] = published or observed_at.removesuffix("Z")
     if severity:
         cve["metrics"] = {
             "cvssMetricV31": [
@@ -25,7 +26,7 @@ def _add(store, cve_id, severity, source_identifier, observed_at):
         }
     rec = parse_cve(cve)
     store.upsert_cve(rec, observed_at)
-    store.add_event(cve_id, observed_at, "published", None, rec.published, "nvd")
+    store.add_event(cve_id, observed_at, "first_seen", None, rec.published, "nvd")
 
 
 def _seed(store):
@@ -33,6 +34,8 @@ def _seed(store):
     _add(store, "CVE-2099-1002", "HIGH", LINUX_KERNEL_CNA, IN_WINDOW)
     _add(store, "CVE-2099-1003", "HIGH", "cna@example.invalid", IN_WINDOW)
     _add(store, "CVE-2099-1004", None, LINUX_KERNEL_CNA, IN_WINDOW)
+    # 昔公開されて最近更新された CVE: 初出には数えるが新規公開には数えない
+    _add(store, "CVE-2019-0001", "CRITICAL", LINUX_KERNEL_CNA, IN_WINDOW, "2019-05-01T00:00:00")
     # 窓の外（集計に入らない）
     _add(store, "CVE-2099-1005", "LOW", LINUX_KERNEL_CNA, OLD)
     store.add_event("CVE-2099-1005", IN_WINDOW, "cvss_v31_changed", "5.0", "9.0", "nvd")
@@ -47,13 +50,15 @@ def test_report_numbers(store):
     assert rep.since == "2099-01-09T00:00:00Z"
     assert rep.until == "2099-01-10T00:00:00Z"
     assert rep.new_count == 4
-    assert rep.events == {"cvss_v31_changed": 1, "published": 4, "status_changed": 1}
+    assert rep.first_seen_count == 5
+    assert rep.events == {"cvss_v31_changed": 1, "first_seen": 5, "status_changed": 1}
     assert rep.new_by_severity == {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 0, "LOW": 0, "(none)": 1}
     assert rep.new_kernel_cna == 2
     assert rep.sync_state == [("nvd", "2099-01-09T23:30:00Z", None)]
 
     wide = build_report(store, NOW, days=7)
     assert wide.new_count == 5
+    assert wide.first_seen_count == 6
     assert wide.new_kernel_cna == 3
     assert wide.events["status_changed"] == 2
 
@@ -63,7 +68,7 @@ def test_format_report_is_plain_table(store):
     text = format_report(build_report(store, NOW, days=1))
     lines = text.splitlines()
     assert lines[0] == "period: 2099-01-09T00:00:00Z .. 2099-01-10T00:00:00Z"
-    assert any(line.split() == ["new", "CVEs", "4"] for line in lines)
+    assert any(line.startswith("new CVEs") and line.split()[-1] == "4" for line in lines)
     assert any(line.split() == ["CRITICAL", "1"] for line in lines)
     assert any(line.split() == ["nvd", "2099-01-09T23:30:00Z"] for line in lines)
 

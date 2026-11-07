@@ -24,7 +24,9 @@ def test_sync_nvd_dry_run_ok(tmp_path, monkeypatch):
     )
     assert res.exit_code == 0, res.output
     assert "fetched: 2" in res.output
-    assert "new: 2" in res.output
+    assert "event first_seen: 2" in res.output
+    # フィクスチャの published は 2099 年で窓の外
+    assert "new: 0" in res.output
 
 
 @respx.mock

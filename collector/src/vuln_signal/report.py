@@ -1,6 +1,7 @@
 """直近 N 日の件数をテキスト表にまとめる。
 
-「新規」は作業 DB に初めて入った CVE（cve_event の kind='published'）を指す。
+「新規公開」は cve.published が窓内の CVE、「初出」は作業 DB に初めて入った CVE
+（cve_event の kind='first_seen'）。lastModified で取るので初出には古い CVE も混じる。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ class Report:
     since: str
     until: str
     new_count: int
+    first_seen_count: int
     events: dict[str, int]
     new_by_severity: dict[str, int]
     new_kernel_cna: int
@@ -41,10 +43,13 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         )
     }
 
-    new_ids = (
-        "SELECT DISTINCT cve_id FROM cve_event "
-        "WHERE kind = 'published' AND observed_at >= ? AND observed_at <= ?"
-    )
+    first_seen_count = conn.execute(
+        "SELECT COUNT(DISTINCT cve_id) FROM cve_event "
+        "WHERE kind = 'first_seen' AND observed_at >= ? AND observed_at <= ?",
+        window,
+    ).fetchone()[0]
+
+    new_ids = "SELECT id FROM cve WHERE published >= ? AND published <= ?"
     new_count = conn.execute(f"SELECT COUNT(*) FROM ({new_ids})", window).fetchone()[0]
 
     by_severity = dict.fromkeys((*SEVERITIES, NO_SEVERITY), 0)
@@ -62,7 +67,7 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
     ).fetchone()[0]
 
     state = [(r["source"], r["last_ok_at"], r["last_error"]) for r in store.list_sync_state()]
-    return Report(since, until, new_count, events, by_severity, kernel, state)
+    return Report(since, until, new_count, first_seen_count, events, by_severity, kernel, state)
 
 
 def _table(headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> str:
@@ -79,7 +84,11 @@ def format_report(rep: Report) -> str:
         "",
         _table(
             ("metric", "count"),
-            [("new CVEs", rep.new_count), ("new from Linux kernel CNA", rep.new_kernel_cna)],
+            [
+                ("new CVEs (published in period)", rep.new_count),
+                ("new from Linux kernel CNA", rep.new_kernel_cna),
+                ("first seen (first_seen events)", rep.first_seen_count),
+            ],
         ),
         "",
         _table(("new by CVSS v3.1 severity", "count"), list(rep.new_by_severity.items())),

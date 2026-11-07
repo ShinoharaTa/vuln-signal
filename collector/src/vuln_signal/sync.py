@@ -23,6 +23,7 @@ class SyncResult:
     start: datetime
     end: datetime
     fetched: int = 0
+    # 初出のうち published が [start, end] 内のもの（新規公開）
     new: int = 0
     events: Counter[str] = field(default_factory=Counter)
 
@@ -36,7 +37,7 @@ def _cvss_text(score: float | None, vector: str | None) -> str | None:
 def diff_events(old: sqlite3.Row | None, new: CveRecord) -> list[Event]:
     """既存行と新しいレコードの差分をイベントにする。last_modified だけの変化は対象外。"""
     if old is None:
-        return [("published", None, new.published)]
+        return [("first_seen", None, new.published)]
     events: list[Event] = []
     for ver in ("v31", "v40"):
         score_col, vector_col = f"cvss_{ver}_score", f"cvss_{ver}_vector"
@@ -93,7 +94,7 @@ def sync_nvd(
         latest = _latest_by_id(records)
         if dry_run:
             for rec in latest.values():
-                _count(result, diff_events(store.get_cve(rec.id), rec))
+                _count(result, diff_events(store.get_cve(rec.id), rec), rec)
             return result
         with store.transaction():
             for rec in latest.values():
@@ -101,7 +102,7 @@ def sync_nvd(
                 store.upsert_cve(rec, now_s)
                 for kind, before, after in events:
                     store.add_event(rec.id, now_s, kind, before, after, SOURCE_NVD)
-                _count(result, events)
+                _count(result, events, rec)
             store.mark_sync_ok(SOURCE_NVD, now_s)
     except Exception as e:
         if not dry_run:
@@ -110,8 +111,10 @@ def sync_nvd(
     return result
 
 
-def _count(result: SyncResult, events: list[Event]) -> None:
+def _count(result: SyncResult, events: list[Event], rec: CveRecord) -> None:
     for kind, _, _ in events:
         result.events[kind] += 1
-        if kind == "published":
-            result.new += 1
+        # lastModified で取るので、昔公開されて最近更新された CVE も初出になる。新規公開とは分ける
+        if kind == "first_seen" and rec.published is not None:
+            if iso(result.start) <= rec.published <= iso(result.end):
+                result.new += 1

@@ -50,20 +50,34 @@ def _dump(store: Store) -> list:
 
 
 @respx.mock
-def test_first_sync_records_published(store, fake_sleep):
+def test_first_sync_records_first_seen(store, fake_sleep):
     route = respx.get(BASE_URL).mock(return_value=httpx.Response(200, json=_page(_base_cves())))
     result = sync_nvd(store, _client(fake_sleep), NOW1)
 
     assert (result.fetched, result.new) == (2, 2)
-    assert dict(result.events) == {"published": 2}
+    assert dict(result.events) == {"first_seen": 2}
     # cursor 無しは now - 24 時間から
     params = route.calls[0].request.url.params
     assert params["lastModStartDate"] == "2099-01-01T00:00:00.000Z"
     assert params["lastModEndDate"] == "2099-01-02T00:00:00.000Z"
 
     assert _events(store) == [
-        ("CVE-2099-0001", "2099-01-02T00:00:00Z", "published", None, "2099-01-01T10:15:30Z", "nvd"),
-        ("CVE-2099-0002", "2099-01-02T00:00:00Z", "published", None, "2099-01-01T11:00:00Z", "nvd"),
+        (
+            "CVE-2099-0001",
+            "2099-01-02T00:00:00Z",
+            "first_seen",
+            None,
+            "2099-01-01T10:15:30Z",
+            "nvd",
+        ),
+        (
+            "CVE-2099-0002",
+            "2099-01-02T00:00:00Z",
+            "first_seen",
+            None,
+            "2099-01-01T11:00:00Z",
+            "nvd",
+        ),
     ]
     row = store.get_cve("CVE-2099-0001")
     assert json.loads(row["cwe_ids"]) == ["CWE-125", "CWE-787"]
@@ -158,7 +172,7 @@ def test_duplicates_in_one_sync_are_merged(store, fake_sleep):
     result = sync_nvd(store, _client(fake_sleep), NOW1)
 
     assert result.fetched == 2
-    assert dict(result.events) == {"published": 1}
+    assert dict(result.events) == {"first_seen": 1}
     assert store.get_cve("CVE-2099-0002")["vuln_status"] == "Rejected"
 
 
@@ -234,6 +248,23 @@ def test_dry_run_does_not_write(store, fake_sleep):
     respx.get(BASE_URL).mock(return_value=httpx.Response(200, json=_page(changed)))
     result = sync_nvd(store, _client(fake_sleep), NOW2, dry_run=True)
 
-    assert (result.fetched, result.new) == (2, 1)
-    assert dict(result.events) == {"published": 1, "status_changed": 1}
+    # CVE-2099-0002 の published は窓（前回 cursor - 5 分以降）より前なので新規公開ではない
+    assert (result.fetched, result.new) == (2, 0)
+    assert dict(result.events) == {"first_seen": 1, "status_changed": 1}
     assert _dump(store) == before
+
+
+@respx.mock
+def test_old_cve_recently_modified_is_first_seen_but_not_new(store, fake_sleep):
+    old = copy.deepcopy(_base_cves()[1])
+    old["id"] = "CVE-2019-9999"
+    old["published"] = "2019-05-01T00:00:00.000"
+    old["lastModified"] = "2099-01-01T23:00:00.000"
+    fresh = _base_cves()[0]
+    respx.get(BASE_URL).mock(return_value=httpx.Response(200, json=_page([old, fresh])))
+    result = sync_nvd(store, _client(fake_sleep), NOW1)
+
+    assert dict(result.events) == {"first_seen": 2}
+    assert result.new == 1
+    kinds = {(r[0], r[2], r[4]) for r in _events(store)}
+    assert ("CVE-2019-9999", "first_seen", "2019-05-01T00:00:00Z") in kinds
