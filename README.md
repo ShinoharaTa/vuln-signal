@@ -9,6 +9,25 @@
 
 設計は [`docs/design.md`](docs/design.md)。
 
+## 開発の準備
+
+秘密情報のコミットを防ぐため、gitleaks を pre-commit で走らせる。sudo は不要。
+
+```sh
+# gitleaks をユーザー領域に入れる（チェックサムを検証してから置く）
+cd "$(mktemp -d)"
+gh release download v8.30.1 --repo gitleaks/gitleaks \
+  -p 'gitleaks_8.30.1_linux_x64.tar.gz' -p 'gitleaks_8.30.1_checksums.txt'
+sha256sum -c --ignore-missing gitleaks_8.30.1_checksums.txt
+tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
+install -m 755 gitleaks ~/.local/bin/gitleaks
+
+# リポジトリのフックを有効にする
+git config core.hooksPath .githooks
+```
+
+秘密情報は `~/.config/vuln-signal/env`（chmod 600）に置く。変数の一覧は [`env.example`](env.example)。`.env*` と `.dev.vars*` は `.gitignore` 済み。
+
 ## ライセンス
 
 - コード: MIT（[`LICENSE`](LICENSE)）
