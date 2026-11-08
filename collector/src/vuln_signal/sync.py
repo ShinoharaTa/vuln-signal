@@ -294,7 +294,8 @@ def sync_epss(
         result.targets = len(targets)
         records = client.fetch(targets)
         result.fetched = len(records)
-        result.model_date = max((r.model_date for r in records), default=cursor)
+        newest = max((r.model_date for r in records if r.model_date), default=None)
+        result.model_date = newest or cursor
         if dry_run:
             for rec in records:
                 for kind, _, _ in diff_epss(store.get_epss(rec.cve_id), rec):
@@ -307,7 +308,11 @@ def sync_epss(
                 for kind, before, after in events:
                     store.add_event(rec.cve_id, now_s, kind, before, after, SOURCE_EPSS)
                     result.events[kind] += 1
-            store.mark_sync_ok(SOURCE_EPSS, now_s, cursor=result.model_date)
+            # 有効な date が無ければ cursor は据え置く（now を入れると同日の再実行がスキップされる）
+            if newest is None:
+                store.mark_sync_ok(SOURCE_EPSS, now_s, keep_cursor=True)
+            else:
+                store.mark_sync_ok(SOURCE_EPSS, now_s, cursor=newest)
     except Exception as e:
         if not dry_run:
             store.mark_sync_error(SOURCE_EPSS, now_s, client.redact(f"{type(e).__name__}: {e}"))

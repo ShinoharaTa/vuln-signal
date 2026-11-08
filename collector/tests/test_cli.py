@@ -164,7 +164,10 @@ def test_sync_all_continues_after_failure(tmp_path, monkeypatch):
         assert s.get_sync_state("kev")["last_error"].startswith("KevError: HTTP 500")
         assert s.get_sync_state("nvd")["last_error"] is None
         assert s.get_sync_state("ghsa")["last_error"] is None
-        assert s.get_sync_state("epss")["last_error"] is None
+        epss_state = s.get_sync_state("epss")
+        assert epss_state["last_error"] is None
+        # 応答 0 件なので cursor は None のまま（時刻を入れない）
+        assert epss_state["cursor"] is None
     finally:
         s.close()
 

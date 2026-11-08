@@ -225,3 +225,34 @@ def test_failure_keeps_cursor(store, fake_sleep):
     assert state["last_run_at"] == "2099-02-01T15:00:00Z"
     assert "503" in state["last_error"]
     assert store.count_rows("epss") == 0
+
+
+@respx.mock
+def test_empty_response_keeps_cursor_and_does_not_skip_later(store, fake_sleep):
+    _add_kev(store, "CVE-2020-0001")
+    route = respx.get(BASE_URL).mock(side_effect=_api({}))
+    # 10:00 は期待モデル日が前日。全件未算出で 0 件
+    sync_epss(store, _client(fake_sleep), datetime(2099, 2, 1, 10, 0, tzinfo=UTC))
+    state = store.get_sync_state("epss")
+    assert state["cursor"] is None
+    assert state["last_ok_at"] == state["last_run_at"] == "2099-02-01T10:00:00Z"
+
+    route.side_effect = _api({"CVE-2020-0001": (0.5, 0.5)})
+    result = sync_epss(store, _client(fake_sleep), NOW)
+    assert result.skipped is False
+    assert route.call_count == 2
+    assert store.get_sync_state("epss")["cursor"] == TODAY
+
+    # 前回値がある状態で 0 件でも据え置き
+    route.side_effect = _api({})
+    sync_epss(store, _client(fake_sleep), NOW, force=True)
+    state = store.get_sync_state("epss")
+    assert state["cursor"] == TODAY
+    assert state["last_ok_at"] == "2099-02-01T15:00:00Z"
+
+
+def test_no_targets_keeps_cursor_none(store, fake_sleep):
+    result = sync_epss(store, _client(fake_sleep), datetime(2099, 2, 1, 10, 0, tzinfo=UTC))
+    assert (result.targets, result.model_date) == (0, None)
+    assert store.get_sync_state("epss")["cursor"] is None
+    assert sync_epss(store, _client(fake_sleep), NOW).skipped is False

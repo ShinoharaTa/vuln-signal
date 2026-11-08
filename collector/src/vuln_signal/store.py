@@ -194,19 +194,26 @@ class Store:
     def list_sync_state(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM sync_state ORDER BY source").fetchall()
 
-    def mark_sync_ok(self, source: str, now: str, cursor: str | None = None) -> None:
-        """成功を記録する。cursor を省くと now をカーソルにする。"""
+    def mark_sync_ok(
+        self, source: str, now: str, cursor: str | None = None, *, keep_cursor: bool = False
+    ) -> None:
+        """成功を記録する。cursor を省くと now をカーソルにする。
+
+        keep_cursor では cursor を前回値のまま据え置く（行が無ければ NULL）。
+        """
+        cursor_update = "" if keep_cursor else "cursor = excluded.cursor,"
+        new_cursor = None if keep_cursor else (now if cursor is None else cursor)
         self.conn.execute(
-            """
+            f"""
             INSERT INTO sync_state (source, cursor, last_run_at, last_ok_at, last_error)
             VALUES (?, ?, ?, ?, NULL)
             ON CONFLICT (source) DO UPDATE SET
-                cursor = excluded.cursor,
+                {cursor_update}
                 last_run_at = excluded.last_run_at,
                 last_ok_at = excluded.last_ok_at,
                 last_error = NULL
             """,
-            (source, now if cursor is None else cursor, now, now),
+            (source, new_cursor, now, now),
         )
 
     def set_sync_etag(self, source: str, etag: str | None) -> None:
