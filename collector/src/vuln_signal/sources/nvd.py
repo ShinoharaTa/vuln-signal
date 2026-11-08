@@ -14,11 +14,11 @@ from typing import Any
 
 import httpx
 
+from vuln_signal.sources.http import TIMEOUT_SECONDS, USER_AGENT
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-USER_AGENT = "vuln-signal/0.1 (+https://github.com/ShinoharaTa/vuln-signal)"
-TIMEOUT_SECONDS = 60.0
 MAX_WINDOW = timedelta(days=120)
 RESULTS_PER_PAGE = 2000
 # NVD の公開上限: キー無し 5 req / 30 秒、キー有り 50 req / 30 秒

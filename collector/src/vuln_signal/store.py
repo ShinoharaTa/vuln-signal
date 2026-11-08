@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vuln_signal.sources.kev import KevRecord
 from vuln_signal.sources.nvd import CveRecord
 
 DB_FILENAME = "work.sqlite3"
@@ -273,4 +274,39 @@ class Store:
             "INSERT INTO cve_event (cve_id, observed_at, kind, before, after, source) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (cve_id, observed_at, kind, before, after, source),
+        )
+
+    # --- kev ---
+
+    def list_kev(self) -> dict[str, sqlite3.Row]:
+        return {r["cve_id"]: r for r in self.conn.execute("SELECT * FROM kev")}
+
+    def count_rows(self, table: str) -> int:
+        return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def upsert_kev(self, rec: KevRecord, fetched_at: str) -> None:
+        row: dict[str, Any] = {
+            "cve_id": rec.cve_id,
+            "date_added": rec.date_added,
+            "vendor_project": rec.vendor_project,
+            "product": rec.product,
+            "vulnerability_name": rec.vulnerability_name,
+            "due_date": rec.due_date,
+            "known_ransomware": rec.known_ransomware,
+            "cwes": json.dumps(rec.cwes),
+            "fetched_at": fetched_at,
+        }
+        self._upsert("kev", "cve_id", row)
+
+    def delete_kev(self, cve_id: str) -> None:
+        self.conn.execute("DELETE FROM kev WHERE cve_id = ?", (cve_id,))
+
+    def _upsert(self, table: str, key: str, row: dict[str, Any]) -> None:
+        cols = ", ".join(row)
+        params = ", ".join(f":{c}" for c in row)
+        updates = ", ".join(f"{c} = excluded.{c}" for c in row if c != key)
+        self.conn.execute(
+            f"INSERT INTO {table} ({cols}) VALUES ({params}) "
+            f"ON CONFLICT ({key}) DO UPDATE SET {updates}",
+            row,
         )
