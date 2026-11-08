@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -67,31 +68,36 @@ def _echo_events(events: dict[str, int]) -> None:
         typer.echo(f"event {kind}: {n}")
 
 
-def _fail(source: str, redacted: str) -> bool:
-    typer.echo(f"sync {source} failed: {redacted}", err=True)
+def _fail(source: str, e: Exception, *secrets: str) -> bool:
+    text = f"{type(e).__name__}: {e}"
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    typer.echo(f"sync {source} failed: {text}", err=True)
     return False
 
 
-# 各 _run_* は結果を表示し、成功なら True を返す（sync all でまとめて回すため例外にしない）
+# 各 _run_* は結果を表示し、成功なら True を返す（sync all でまとめて回すため例外にしない）。
+# Store.open やクライアント生成の失敗も同じく 1 行のエラーにする
 
 
 def _run_nvd(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
-    store = Store.open(cfg.data_dir)
-    client = NvdClient(cfg.nvd_api_key)
     try:
-        result = sync_nvd(
-            store,
-            client,
-            _now(),
-            since,
-            lookback_hours=cfg.nvd_initial_lookback_hours,
-            dry_run=dry_run,
-        )
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            client = NvdClient(cfg.nvd_api_key)
+            stack.callback(client.close)
+            result = sync_nvd(
+                store,
+                client,
+                _now(),
+                since,
+                lookback_hours=cfg.nvd_initial_lookback_hours,
+                dry_run=dry_run,
+            )
     except Exception as e:
-        return _fail("nvd", client.redact(f"{type(e).__name__}: {e}"))
-    finally:
-        client.close()
-        store.close()
+        return _fail("nvd", e, cfg.nvd_api_key)
 
     typer.echo(f"nvd {iso(result.start)} .. {iso(result.end)}{_dry_label(dry_run)}")
     typer.echo(f"requests: {client.request_count}")
@@ -102,15 +108,15 @@ def _run_nvd(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
 
 
 def _run_kev(cfg: Config, dry_run: bool) -> bool:
-    store = Store.open(cfg.data_dir)
-    client = KevClient()
     try:
-        result = sync_kev(store, client, _now(), dry_run=dry_run)
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            client = KevClient()
+            stack.callback(client.close)
+            result = sync_kev(store, client, _now(), dry_run=dry_run)
     except Exception as e:
-        return _fail("kev", client.redact(f"{type(e).__name__}: {e}"))
-    finally:
-        client.close()
-        store.close()
+        return _fail("kev", e)
 
     typer.echo(f"kev catalogVersion {result.catalog_version or '-'}{_dry_label(dry_run)}")
     typer.echo(f"requests: {client.request_count}")
@@ -124,22 +130,22 @@ def _run_kev(cfg: Config, dry_run: bool) -> bool:
 
 
 def _run_epss(cfg: Config, force: bool, dry_run: bool) -> bool:
-    store = Store.open(cfg.data_dir)
-    client = EpssClient()
     try:
-        result = sync_epss(
-            store,
-            client,
-            _now(),
-            window_days=cfg.epss_window_days,
-            force=force,
-            dry_run=dry_run,
-        )
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            client = EpssClient()
+            stack.callback(client.close)
+            result = sync_epss(
+                store,
+                client,
+                _now(),
+                window_days=cfg.epss_window_days,
+                force=force,
+                dry_run=dry_run,
+            )
     except Exception as e:
-        return _fail("epss", client.redact(f"{type(e).__name__}: {e}"))
-    finally:
-        client.close()
-        store.close()
+        return _fail("epss", e)
 
     if result.skipped:
         typer.echo(f"epss skipped: already have {result.model_date}")
@@ -153,22 +159,22 @@ def _run_epss(cfg: Config, force: bool, dry_run: bool) -> bool:
 
 
 def _run_ghsa(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
-    store = Store.open(cfg.data_dir)
-    client = GhsaClient(cfg.github_token)
     try:
-        result = sync_ghsa(
-            store,
-            client,
-            _now(),
-            since,
-            lookback_hours=cfg.ghsa_initial_lookback_hours,
-            dry_run=dry_run,
-        )
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            client = GhsaClient(cfg.github_token)
+            stack.callback(client.close)
+            result = sync_ghsa(
+                store,
+                client,
+                _now(),
+                since,
+                lookback_hours=cfg.ghsa_initial_lookback_hours,
+                dry_run=dry_run,
+            )
     except Exception as e:
-        return _fail("ghsa", client.redact(f"{type(e).__name__}: {e}"))
-    finally:
-        client.close()
-        store.close()
+        return _fail("ghsa", e, cfg.github_token)
 
     typer.echo(f"ghsa {iso(result.start)} .. {iso(result.end)}{_dry_label(dry_run)}")
     typer.echo(f"requests: {client.request_count}")

@@ -190,3 +190,63 @@ def test_sync_all_ok_dry_run(tmp_path, monkeypatch):
         assert s.list_sync_state() == []
     finally:
         s.close()
+
+
+def _mock_all_ok():
+    routes = {
+        "nvd": respx.get(BASE_URL).mock(
+            return_value=httpx.Response(200, json=load_fixture("nvd_two_cves.json"))
+        ),
+        "kev": respx.get(kev.FEED_URL).mock(
+            return_value=httpx.Response(200, json=load_fixture("kev_catalog.json"))
+        ),
+        "ghsa": respx.get(ghsa.BASE_URL).mock(return_value=httpx.Response(200, json=[])),
+        "epss": respx.get(epss.BASE_URL).mock(
+            return_value=httpx.Response(
+                200, json={"status": "OK", "total": 0, "offset": 0, "limit": 100, "data": []}
+            )
+        ),
+    }
+    return routes
+
+
+@respx.mock
+def test_sync_all_continues_when_store_open_fails(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    routes = _mock_all_ok()
+    orig = Store.open
+    calls = {"n": 0}
+
+    def flaky_open(data_dir):
+        calls["n"] += 1
+        # 2 番目（kev）だけ開けない
+        if calls["n"] == 2:
+            raise OSError("database is locked")
+        return orig(data_dir)
+
+    monkeypatch.setattr(cli.Store, "open", flaky_open)
+    res = CliRunner().invoke(cli.app, ["sync", "all"])
+    assert res.exit_code == 1
+    assert "sync kev failed: OSError: database is locked" in res.output
+    assert routes["kev"].call_count == 0
+    assert routes["nvd"].call_count == routes["ghsa"].call_count == 1
+    assert "ghsa " in res.output and "epss model_date" in res.output
+
+
+@respx.mock
+def test_sync_all_continues_when_client_creation_fails(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    token = "test-token-not-real-2222"
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+    routes = _mock_all_ok()
+
+    def broken_client(t):
+        raise ValueError("bad token " + t)
+
+    monkeypatch.setattr(cli, "GhsaClient", broken_client)
+    res = CliRunner().invoke(cli.app, ["sync", "all"])
+    assert res.exit_code == 1
+    assert "sync ghsa failed: ValueError: bad token ***" in res.output
+    assert token not in res.output
+    assert routes["nvd"].call_count == routes["kev"].call_count == 1
+    assert "epss model_date" in res.output
