@@ -60,6 +60,64 @@ MIGRATIONS: list[str] = [
     CREATE INDEX cve_event_cve_observed ON cve_event (cve_id, observed_at);
     CREATE INDEX cve_event_observed ON cve_event (observed_at);
     """,
+    # v2: KEV / GHSA は NVD 未取得の CVE や CVE の無い GHSA にもイベントを積むので
+    # cve_event の FK を外す（SQLite は FK だけ外せないので作り直す）。
+    # CVE の無い GHSA は cve_id に GHSA ID を入れる
+    """
+    CREATE TABLE cve_event_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cve_id TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        before TEXT,
+        after TEXT,
+        source TEXT NOT NULL
+    );
+    INSERT INTO cve_event_new (id, cve_id, observed_at, kind, before, after, source)
+        SELECT id, cve_id, observed_at, kind, before, after, source FROM cve_event;
+    DROP TABLE cve_event;
+    ALTER TABLE cve_event_new RENAME TO cve_event;
+    CREATE INDEX cve_event_cve_observed ON cve_event (cve_id, observed_at);
+    CREATE INDEX cve_event_observed ON cve_event (observed_at);
+    ALTER TABLE sync_state ADD COLUMN etag TEXT;
+    CREATE TABLE kev (
+        cve_id TEXT PRIMARY KEY,
+        date_added TEXT,          -- KEV の dateAdded（YYYY-MM-DD）
+        vendor_project TEXT,
+        product TEXT,
+        vulnerability_name TEXT,
+        due_date TEXT,
+        known_ransomware TEXT,    -- knownRansomwareCampaignUse（Known / Unknown）
+        cwes TEXT,                -- JSON 配列
+        fetched_at TEXT
+    );
+    CREATE TABLE epss (
+        cve_id TEXT PRIMARY KEY,
+        score REAL,
+        percentile REAL,
+        model_date TEXT,          -- 応答の date（YYYY-MM-DD）
+        fetched_at TEXT
+    );
+    CREATE TABLE ghsa (
+        ghsa_id TEXT PRIMARY KEY,
+        cve_id TEXT,
+        severity TEXT,            -- low / medium / high / critical
+        summary TEXT,
+        published_at TEXT,
+        updated_at TEXT,
+        withdrawn_at TEXT,
+        cvss_v3_score REAL,
+        cvss_v3_vector TEXT,
+        cvss_v4_score REAL,
+        cvss_v4_vector TEXT,
+        packages TEXT,            -- JSON 配列 [{name, vulnerable_version_range,
+                                  --   first_patched_version}] を name, range 順
+        html_url TEXT,
+        raw_gz BLOB,              -- API 応答の 1 件を JSON にして gzip
+        fetched_at TEXT
+    );
+    CREATE INDEX ghsa_cve ON ghsa (cve_id);
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -133,7 +191,8 @@ class Store:
     def list_sync_state(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM sync_state ORDER BY source").fetchall()
 
-    def mark_sync_ok(self, source: str, now: str) -> None:
+    def mark_sync_ok(self, source: str, now: str, cursor: str | None = None) -> None:
+        """成功を記録する。cursor を省くと now をカーソルにする。"""
         self.conn.execute(
             """
             INSERT INTO sync_state (source, cursor, last_run_at, last_ok_at, last_error)
@@ -144,7 +203,17 @@ class Store:
                 last_ok_at = excluded.last_ok_at,
                 last_error = NULL
             """,
-            (source, now, now, now),
+            (source, now if cursor is None else cursor, now, now),
+        )
+
+    def set_sync_etag(self, source: str, etag: str | None) -> None:
+        """sync_state の etag を書く。行が無ければ作る。"""
+        self.conn.execute(
+            """
+            INSERT INTO sync_state (source, etag) VALUES (?, ?)
+            ON CONFLICT (source) DO UPDATE SET etag = excluded.etag
+            """,
+            (source, etag),
         )
 
     def mark_sync_error(self, source: str, now: str, error: str) -> None:
