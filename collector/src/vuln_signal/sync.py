@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
+from vuln_signal.sources.epss import EpssClient, EpssRecord
 from vuln_signal.sources.kev import KevClient, KevError, KevRecord
 from vuln_signal.sources.nvd import CveRecord, NvdClient
 from vuln_signal.store import Store, iso, parse_iso
@@ -15,6 +16,14 @@ SOURCE_NVD = "nvd"
 SOURCE_KEV = "kev"
 # KEV の件数が既存行数のこの割合を下回ったら壊れた配信とみなす（一斉削除イベントを出さない）
 KEV_MIN_RATIO = 0.9
+SOURCE_EPSS = "epss"
+# EPSS の変化をイベントにする閾値: score の上昇幅、または percentile がこの値を跨いだとき
+EPSS_SCORE_JUMP = 0.2
+EPSS_PERCENTILE_HIGH = 0.9
+# FIRST が当日のモデルを出し終える目安の時刻（UTC）。これより前は前日分が最新
+EPSS_PUBLISH_HOUR_UTC = 14
+# 浮動小数の誤差で閾値ちょうどを取りこぼさないための幅
+_EPS = 1e-9
 # 前回カーソルから少し戻して取り、境界の取りこぼしを防ぐ
 CURSOR_OVERLAP = timedelta(minutes=5)
 
@@ -207,5 +216,93 @@ def sync_kev(
     except Exception as e:
         if not dry_run:
             store.mark_sync_error(SOURCE_KEV, now_s, client.redact(f"{type(e).__name__}: {e}"))
+        raise
+    return result
+
+
+@dataclass
+class EpssSyncResult:
+    expected_date: str
+    # 既に期待モデル日のデータを持っていて取得しなかった
+    skipped: bool = False
+    # 応答の date の最大値（スキップ時は前回の値）
+    model_date: str | None = None
+    targets: int = 0
+    fetched: int = 0
+    events: Counter[str] = field(default_factory=Counter)
+
+
+def expected_epss_date(now: datetime) -> str:
+    """いま取れるはずの最新モデル日。UTC 14:00 以降なら今日、それより前なら昨日。"""
+    day: date = now.astimezone(UTC).date()
+    if now.astimezone(UTC).hour < EPSS_PUBLISH_HOUR_UTC:
+        day -= timedelta(days=1)
+    return day.isoformat()
+
+
+def _epss_text(score: float, percentile: float) -> str:
+    return f"{score:.4f} p{percentile:.3f}"
+
+
+def diff_epss(old: sqlite3.Row | None, new: EpssRecord) -> list[Event]:
+    """score が EPSS_SCORE_JUMP 以上上がったか、percentile が EPSS_PERCENTILE_HIGH を跨いだら変化。
+
+    既存行が無ければイベントにしない。
+    """
+    if old is None:
+        return []
+    jumped = new.score - old["score"] >= EPSS_SCORE_JUMP - _EPS
+    crossed = old["percentile"] < EPSS_PERCENTILE_HIGH <= new.percentile
+    if jumped or crossed:
+        before = _epss_text(old["score"], old["percentile"])
+        return [("epss_changed", before, _epss_text(new.score, new.percentile))]
+    return []
+
+
+def sync_epss(
+    store: Store,
+    client: EpssClient,
+    now: datetime,
+    *,
+    window_days: int = 30,
+    force: bool = False,
+    dry_run: bool = False,
+) -> EpssSyncResult:
+    """対象 CVE の EPSS を取り、作業 DB の epss に反映する。cursor は応答の date の最大値。
+
+    既に期待モデル日以降のデータがあれば何もしない（force で無視）。
+    失敗時は sync_state の last_run_at と last_error だけを更新し、例外を投げ直す。
+    """
+    now_s = iso(now)
+    result = EpssSyncResult(expected_date=expected_epss_date(now))
+    state = store.get_sync_state(SOURCE_EPSS)
+    cursor = state["cursor"] if state is not None else None
+    if not force and cursor is not None and cursor >= result.expected_date:
+        result.skipped = True
+        result.model_date = cursor
+        return result
+    try:
+        since = iso(now - timedelta(days=window_days))
+        targets = store.epss_targets(since, since)
+        result.targets = len(targets)
+        records = client.fetch(targets)
+        result.fetched = len(records)
+        result.model_date = max((r.model_date for r in records), default=cursor)
+        if dry_run:
+            for rec in records:
+                for kind, _, _ in diff_epss(store.get_epss(rec.cve_id), rec):
+                    result.events[kind] += 1
+            return result
+        with store.transaction():
+            for rec in records:
+                events = diff_epss(store.get_epss(rec.cve_id), rec)
+                store.upsert_epss(rec, now_s)
+                for kind, before, after in events:
+                    store.add_event(rec.cve_id, now_s, kind, before, after, SOURCE_EPSS)
+                    result.events[kind] += 1
+            store.mark_sync_ok(SOURCE_EPSS, now_s, cursor=result.model_date)
+    except Exception as e:
+        if not dry_run:
+            store.mark_sync_error(SOURCE_EPSS, now_s, client.redact(f"{type(e).__name__}: {e}"))
         raise
     return result

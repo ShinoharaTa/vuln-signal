@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vuln_signal.sources.epss import EpssRecord
 from vuln_signal.sources.kev import KevRecord
 from vuln_signal.sources.nvd import CveRecord
 
@@ -300,6 +301,34 @@ class Store:
 
     def delete_kev(self, cve_id: str) -> None:
         self.conn.execute("DELETE FROM kev WHERE cve_id = ?", (cve_id,))
+
+    # --- epss ---
+
+    def epss_targets(self, published_since: str, ghsa_updated_since: str) -> list[str]:
+        """EPSS を取る CVE: 最近公開された CVE ∪ KEV の全 CVE ∪ 最近更新された GHSA の CVE。"""
+        rows = self.conn.execute(
+            """
+            SELECT id FROM cve WHERE published >= ?
+            UNION SELECT cve_id FROM kev
+            UNION SELECT cve_id FROM ghsa WHERE cve_id IS NOT NULL AND updated_at >= ?
+            ORDER BY 1
+            """,
+            (published_since, ghsa_updated_since),
+        )
+        return [r[0] for r in rows]
+
+    def get_epss(self, cve_id: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM epss WHERE cve_id = ?", (cve_id,)).fetchone()
+
+    def upsert_epss(self, rec: EpssRecord, fetched_at: str) -> None:
+        row: dict[str, Any] = {
+            "cve_id": rec.cve_id,
+            "score": rec.score,
+            "percentile": rec.percentile,
+            "model_date": rec.model_date,
+            "fetched_at": fetched_at,
+        }
+        self._upsert("epss", "cve_id", row)
 
     def _upsert(self, table: str, key: str, row: dict[str, Any]) -> None:
         cols = ", ".join(row)
