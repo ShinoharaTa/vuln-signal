@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from vuln_signal.sources.epss import EpssClient, EpssRecord
+from vuln_signal.sources.ghsa import GhsaClient, GhsaRecord
 from vuln_signal.sources.kev import KevClient, KevError, KevRecord
 from vuln_signal.sources.nvd import CveRecord, NvdClient
 from vuln_signal.store import Store, iso, parse_iso
@@ -22,6 +24,7 @@ EPSS_SCORE_JUMP = 0.2
 EPSS_PERCENTILE_HIGH = 0.9
 # FIRST が当日のモデルを出し終える目安の時刻（UTC）。これより前は前日分が最新
 EPSS_PUBLISH_HOUR_UTC = 14
+SOURCE_GHSA = "ghsa"
 # 浮動小数の誤差で閾値ちょうどを取りこぼさないための幅
 _EPS = 1e-9
 # 前回カーソルから少し戻して取り、境界の取りこぼしを防ぐ
@@ -74,11 +77,15 @@ def _latest_by_id(records: list[CveRecord]) -> dict[str, CveRecord]:
 
 
 def resolve_start(
-    store: Store, now: datetime, since: datetime | None, lookback_hours: int
+    store: Store,
+    now: datetime,
+    since: datetime | None,
+    lookback_hours: int,
+    source: str = SOURCE_NVD,
 ) -> datetime:
     if since is not None:
         return since
-    state = store.get_sync_state(SOURCE_NVD)
+    state = store.get_sync_state(source)
     if state is not None and state["cursor"]:
         return parse_iso(state["cursor"]) - CURSOR_OVERLAP
     return now - timedelta(hours=lookback_hours)
@@ -304,5 +311,93 @@ def sync_epss(
     except Exception as e:
         if not dry_run:
             store.mark_sync_error(SOURCE_EPSS, now_s, client.redact(f"{type(e).__name__}: {e}"))
+        raise
+    return result
+
+
+@dataclass
+class GhsaSyncResult:
+    start: datetime
+    end: datetime
+    fetched: int = 0
+    events: Counter[str] = field(default_factory=Counter)
+
+
+def _patched_text(packages: list[dict[str, str | None]]) -> str:
+    """first_patched_version の集合を name@version のカンマ連結にする。未修正は name@-。"""
+    items = {f"{p['name']}@{p['first_patched_version'] or '-'}" for p in packages}
+    return ",".join(sorted(items))
+
+
+def ghsa_subject(rec: GhsaRecord) -> str:
+    """cve_event.cve_id に入れる主体。CVE があればそれ、無ければ GHSA ID。"""
+    return rec.cve_id or rec.ghsa_id
+
+
+def diff_ghsa(old: sqlite3.Row | None, new: GhsaRecord) -> list[Event]:
+    """既存行と新しいレコードの差分をイベントにする。updated_at だけの変化は対象外。"""
+    if old is None:
+        return [("ghsa_first_seen", None, new.ghsa_id)]
+    events: list[Event] = []
+    if old["cve_id"] is None and new.cve_id is not None:
+        events.append(("ghsa_cve_assigned", new.ghsa_id, new.cve_id))
+    if old["severity"] != new.severity:
+        events.append(("ghsa_severity_changed", old["severity"], new.severity))
+    before = _patched_text(json.loads(old["packages"] or "[]"))
+    after = _patched_text(new.packages)
+    if before != after:
+        events.append(("ghsa_patched_changed", before, after))
+    if old["withdrawn_at"] is None and new.withdrawn_at is not None:
+        events.append(("ghsa_withdrawn", None, new.withdrawn_at))
+    return events
+
+
+def _latest_ghsa(records: list[GhsaRecord]) -> dict[str, GhsaRecord]:
+    """同じ GHSA が重複して来たら updated_at が新しい方（同じなら後に来た方）を採る。"""
+    latest: dict[str, GhsaRecord] = {}
+    for rec in records:
+        cur = latest.get(rec.ghsa_id)
+        if cur is None or (rec.updated_at or "") >= (cur.updated_at or ""):
+            latest[rec.ghsa_id] = rec
+    return latest
+
+
+def sync_ghsa(
+    store: Store,
+    client: GhsaClient,
+    now: datetime,
+    since: datetime | None = None,
+    *,
+    lookback_hours: int = 24,
+    dry_run: bool = False,
+) -> GhsaSyncResult:
+    """GitHub Advisory Database（npm、reviewed）から modified が [開始, now] のものを取り反映する。
+
+    開始は NVD と同じ（--since、無ければ前回 cursor - 5 分、初回は now - lookback_hours）。
+    失敗時は sync_state の last_run_at と last_error だけを更新し、例外を投げ直す。
+    """
+    start = resolve_start(store, now, since, lookback_hours, SOURCE_GHSA)
+    now_s = iso(now)
+    result = GhsaSyncResult(start=start, end=now)
+    try:
+        records = client.fetch_modified(start, now)
+        result.fetched = len(records)
+        latest = _latest_ghsa(records)
+        if dry_run:
+            for rec in latest.values():
+                for kind, _, _ in diff_ghsa(store.get_ghsa(rec.ghsa_id), rec):
+                    result.events[kind] += 1
+            return result
+        with store.transaction():
+            for rec in latest.values():
+                events = diff_ghsa(store.get_ghsa(rec.ghsa_id), rec)
+                store.upsert_ghsa(rec, now_s)
+                for kind, before, after in events:
+                    store.add_event(ghsa_subject(rec), now_s, kind, before, after, SOURCE_GHSA)
+                    result.events[kind] += 1
+            store.mark_sync_ok(SOURCE_GHSA, now_s)
+    except Exception as e:
+        if not dry_run:
+            store.mark_sync_error(SOURCE_GHSA, now_s, client.redact(f"{type(e).__name__}: {e}"))
         raise
     return result

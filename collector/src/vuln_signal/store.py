@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from vuln_signal.sources.epss import EpssRecord
+from vuln_signal.sources.ghsa import GhsaRecord
 from vuln_signal.sources.kev import KevRecord
 from vuln_signal.sources.nvd import CveRecord
 
@@ -329,6 +330,32 @@ class Store:
             "fetched_at": fetched_at,
         }
         self._upsert("epss", "cve_id", row)
+
+    # --- ghsa ---
+
+    def get_ghsa(self, ghsa_id: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM ghsa WHERE ghsa_id = ?", (ghsa_id,)).fetchone()
+
+    def upsert_ghsa(self, rec: GhsaRecord, fetched_at: str) -> None:
+        raw_gz = gzip.compress(json.dumps(rec.raw, ensure_ascii=False).encode("utf-8"))
+        row: dict[str, Any] = {
+            "ghsa_id": rec.ghsa_id,
+            "cve_id": rec.cve_id,
+            "severity": rec.severity,
+            "summary": rec.summary,
+            "published_at": rec.published_at,
+            "updated_at": rec.updated_at,
+            "withdrawn_at": rec.withdrawn_at,
+            "cvss_v3_score": rec.cvss_v3_score,
+            "cvss_v3_vector": rec.cvss_v3_vector,
+            "cvss_v4_score": rec.cvss_v4_score,
+            "cvss_v4_vector": rec.cvss_v4_vector,
+            "packages": json.dumps(rec.packages, ensure_ascii=False),
+            "html_url": rec.html_url,
+            "raw_gz": raw_gz,
+            "fetched_at": fetched_at,
+        }
+        self._upsert("ghsa", "ghsa_id", row)
 
     def _upsert(self, table: str, key: str, row: dict[str, Any]) -> None:
         cols = ", ".join(row)
