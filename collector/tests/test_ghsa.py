@@ -294,3 +294,43 @@ def test_since_overrides_cursor(store, fake_sleep):
     route = _mock([])
     sync_ghsa(store, _client(fake_sleep), NOW1, since=datetime(2098, 12, 31, tzinfo=UTC))
     assert route.calls[0].request.url.params["modified"].startswith("2098-12-31T00:00:00Z..")
+
+
+@respx.mock
+def test_cve_id_replaced_is_cve_changed(store, fake_sleep):
+    first = load_fixture("ghsa_page1_of_2.json")[0]
+    _mock([first])
+    sync_ghsa(store, _client(fake_sleep), NOW1)
+
+    changed = copy.deepcopy(first)
+    changed["cve_id"] = "CVE-2099-0999"
+    _mock([changed])
+    result = sync_ghsa(store, _client(fake_sleep), NOW2)
+    assert dict(result.events) == {"ghsa_cve_changed": 1}
+    # 新しい主体（新 cve_id）に積む
+    assert _events(store)[1:] == [
+        ("CVE-2099-0999", "ghsa_cve_changed", "CVE-2099-0001", "CVE-2099-0999", "ghsa"),
+    ]
+
+
+@respx.mock
+def test_cve_id_removed_is_cve_changed_on_ghsa_id(store, fake_sleep):
+    first = load_fixture("ghsa_page1_of_2.json")[0]
+    _mock([first])
+    sync_ghsa(store, _client(fake_sleep), NOW1)
+
+    changed = copy.deepcopy(first)
+    changed["cve_id"] = None
+    _mock([changed])
+    result = sync_ghsa(store, _client(fake_sleep), NOW2)
+    assert dict(result.events) == {"ghsa_cve_changed": 1}
+    assert _events(store)[1:] == [
+        (
+            "GHSA-2099-aaaa-0001",
+            "ghsa_cve_changed",
+            "CVE-2099-0001",
+            "GHSA-2099-aaaa-0001",
+            "ghsa",
+        ),
+    ]
+    assert store.get_ghsa("GHSA-2099-aaaa-0001")["cve_id"] is None

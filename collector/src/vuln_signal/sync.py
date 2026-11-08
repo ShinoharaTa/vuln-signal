@@ -344,8 +344,12 @@ def diff_ghsa(old: sqlite3.Row | None, new: GhsaRecord) -> list[Event]:
     if old is None:
         return [("ghsa_first_seen", None, new.ghsa_id)]
     events: list[Event] = []
-    if old["cve_id"] is None and new.cve_id is not None:
-        events.append(("ghsa_cve_assigned", new.ghsa_id, new.cve_id))
+    if old["cve_id"] != new.cve_id:
+        if old["cve_id"] is None:
+            events.append(("ghsa_cve_assigned", new.ghsa_id, new.cve_id))
+        else:
+            # 値→別の値、値→NULL。NULL 側は GHSA ID で表す
+            events.append(("ghsa_cve_changed", old["cve_id"], new.cve_id or new.ghsa_id))
     if old["severity"] != new.severity:
         events.append(("ghsa_severity_changed", old["severity"], new.severity))
     before = _patched_text(json.loads(old["packages"] or "[]"))
