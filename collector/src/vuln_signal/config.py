@@ -13,6 +13,7 @@ from pathlib import Path
 DEFAULT_ENV_FILE = "~/.config/vuln-signal/env"
 DEFAULT_DATA_DIR = "~/.local/share/vuln-signal"
 DEFAULT_INITIAL_LOOKBACK_HOURS = 24
+DEFAULT_EPSS_WINDOW_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,9 @@ class Config:
     nvd_api_key: str = field(default="", repr=False)
     data_dir: Path = field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     nvd_initial_lookback_hours: int = DEFAULT_INITIAL_LOOKBACK_HOURS
+    github_token: str = field(default="", repr=False)
+    ghsa_initial_lookback_hours: int = DEFAULT_INITIAL_LOOKBACK_HOURS
+    epss_window_days: int = DEFAULT_EPSS_WINDOW_DAYS
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -53,11 +57,22 @@ def load_env_file(environ: MutableMapping[str, str]) -> None:
 
 def from_mapping(env: Mapping[str, str]) -> Config:
     data_dir = Path(env.get("VULN_SIGNAL_DATA_DIR") or DEFAULT_DATA_DIR).expanduser()
-    hours = env.get("NVD_INITIAL_LOOKBACK_HOURS") or ""
+
+    def _int(key: str, default: int) -> int:
+        value = env.get(key) or ""
+        return int(value) if value else default
+
     return Config(
         nvd_api_key=env.get("NVD_API_KEY", ""),
         data_dir=data_dir,
-        nvd_initial_lookback_hours=int(hours) if hours else DEFAULT_INITIAL_LOOKBACK_HOURS,
+        nvd_initial_lookback_hours=_int(
+            "NVD_INITIAL_LOOKBACK_HOURS", DEFAULT_INITIAL_LOOKBACK_HOURS
+        ),
+        github_token=env.get("GITHUB_TOKEN", ""),
+        ghsa_initial_lookback_hours=_int(
+            "GHSA_INITIAL_LOOKBACK_HOURS", DEFAULT_INITIAL_LOOKBACK_HOURS
+        ),
+        epss_window_days=_int("EPSS_WINDOW_DAYS", DEFAULT_EPSS_WINDOW_DAYS),
     )
 
 

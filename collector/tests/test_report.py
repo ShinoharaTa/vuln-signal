@@ -5,6 +5,7 @@ from conftest import load_fixture
 from typer.testing import CliRunner
 
 from vuln_signal.report import build_report, format_report
+from vuln_signal.sources.kev import KevRecord
 from vuln_signal.sources.nvd import LINUX_KERNEL_CNA, parse_cve
 
 NOW = datetime(2099, 1, 10, 0, 0, tzinfo=UTC)
@@ -42,6 +43,13 @@ def _seed(store):
     store.add_event("CVE-2099-1005", IN_WINDOW, "status_changed", "Received", "Rejected", "nvd")
     store.add_event("CVE-2099-1001", OLD, "status_changed", "Received", "Analyzed", "nvd")
     store.mark_sync_ok("nvd", "2099-01-09T23:30:00Z")
+    # 新しいソースのイベントもそのまま集計に出る
+    store.add_event("CVE-2098-0001", IN_WINDOW, "kev_added", None, "2099-01-09", "kev")
+    store.add_event("GHSA-xxxx-xxxx-xxxx", IN_WINDOW, "ghsa_first_seen", None, "g", "ghsa")
+    for cve_id in ("CVE-2098-0001", "CVE-2098-0002"):
+        store.upsert_kev(KevRecord(cve_id, "2099-01-09", None, None, None, None, "Unknown"), "x")
+    store.conn.execute("INSERT INTO ghsa (ghsa_id) VALUES ('GHSA-xxxx-xxxx-xxxx')")
+    store.mark_sync_ok("kev", "2099-01-09T23:40:00Z", cursor="2099.01.09")
 
 
 def test_report_numbers(store):
@@ -51,10 +59,20 @@ def test_report_numbers(store):
     assert rep.until == "2099-01-10T00:00:00Z"
     assert rep.new_count == 4
     assert rep.first_seen_count == 5
-    assert rep.events == {"cvss_v31_changed": 1, "first_seen": 5, "status_changed": 1}
+    assert rep.events == {
+        "cvss_v31_changed": 1,
+        "first_seen": 5,
+        "ghsa_first_seen": 1,
+        "kev_added": 1,
+        "status_changed": 1,
+    }
     assert rep.new_by_severity == {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 0, "LOW": 0, "(none)": 1}
     assert rep.new_kernel_cna == 2
-    assert rep.sync_state == [("nvd", "2099-01-09T23:30:00Z", None)]
+    assert rep.sync_state == [
+        ("kev", "2099-01-09T23:40:00Z", None),
+        ("nvd", "2099-01-09T23:30:00Z", None),
+    ]
+    assert (rep.kev_total, rep.epss_rows, rep.ghsa_rows) == (2, 0, 1)
 
     wide = build_report(store, NOW, days=7)
     assert wide.new_count == 5
@@ -71,6 +89,10 @@ def test_format_report_is_plain_table(store):
     assert any(line.startswith("new CVEs") and line.split()[-1] == "4" for line in lines)
     assert any(line.split() == ["CRITICAL", "1"] for line in lines)
     assert any(line.split() == ["nvd", "2099-01-09T23:30:00Z"] for line in lines)
+    assert any(line.split() == ["kev", "2099-01-09T23:40:00Z"] for line in lines)
+    assert "kev total: 2" in lines
+    assert "epss rows: 0" in lines
+    assert "ghsa rows: 1" in lines
 
 
 def test_report_empty_db(store):
