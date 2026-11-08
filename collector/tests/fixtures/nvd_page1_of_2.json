@@ -1,0 +1,44 @@
+{
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2099-02-02T00:00:00.000",
+  "totalResults": 3,
+  "resultsPerPage": 2,
+  "startIndex": 0,
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2099-0101",
+        "sourceIdentifier": "cna@example.invalid",
+        "published": "2099-02-01T00:00:00.000",
+        "lastModified": "2099-02-01T00:00:00.000",
+        "vulnStatus": "Awaiting Analysis",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Fictional issue 1."
+          }
+        ],
+        "metrics": {},
+        "references": []
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2099-0102",
+        "sourceIdentifier": "cna@example.invalid",
+        "published": "2099-02-01T00:00:00.000",
+        "lastModified": "2099-02-01T00:00:00.000",
+        "vulnStatus": "Awaiting Analysis",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Fictional issue 2."
+          }
+        ],
+        "metrics": {},
+        "references": []
+      }
+    }
+  ]
+}

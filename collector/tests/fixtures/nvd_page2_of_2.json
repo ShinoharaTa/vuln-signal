@@ -1,0 +1,27 @@
+{
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2099-02-02T00:00:00.000",
+  "totalResults": 3,
+  "resultsPerPage": 2,
+  "startIndex": 2,
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2099-0103",
+        "sourceIdentifier": "cna@example.invalid",
+        "published": "2099-02-01T00:00:00.000",
+        "lastModified": "2099-02-01T00:00:00.000",
+        "vulnStatus": "Awaiting Analysis",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Fictional issue 3."
+          }
+        ],
+        "metrics": {},
+        "references": []
+      }
+    }
+  ]
+}
