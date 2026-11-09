@@ -1,4 +1,5 @@
 import copy
+import logging
 from datetime import UTC, datetime
 
 import httpx
@@ -256,3 +257,20 @@ def test_no_targets_keeps_cursor_none(store, fake_sleep):
     assert (result.targets, result.model_date) == (0, None)
     assert store.get_sync_state("epss")["cursor"] is None
     assert sync_epss(store, _client(fake_sleep), NOW).skipped is False
+
+
+@respx.mock
+def test_request_log_does_not_list_all_cves(store, fake_sleep, caplog):
+    ids = [f"CVE-2020-{i:04d}" for i in range(100)]
+    for i in ids:
+        _add_kev(store, i)
+    respx.get(BASE_URL).mock(side_effect=_api({}))
+
+    with caplog.at_level(logging.INFO, logger="vuln_signal.sources.http"):
+        sync_epss(store, _client(fake_sleep), NOW)
+
+    lines = [r.getMessage() for r in caplog.records if " GET " in r.getMessage()]
+    assert len(lines) == 1
+    assert len(lines[0]) <= 200
+    assert "CVE-2020-0000,CVE-2020-0001,CVE-2020-0002…(+97 items)" in lines[0]
+    assert "CVE-2020-0099" not in lines[0]

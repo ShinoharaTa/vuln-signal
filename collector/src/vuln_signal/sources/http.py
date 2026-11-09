@@ -15,6 +15,24 @@ USER_AGENT = "vuln-signal/0.1 (+https://github.com/ShinoharaTa/vuln-signal)"
 TIMEOUT_SECONDS = 60.0
 # 429 / 5xx / 接続エラーのときの待ち時間。最大 3 回
 RETRY_WAITS = (10.0, 30.0, 60.0)
+# リクエストログで params の値を丸める閾値（EPSS の cve= は 100 件並ぶ）
+LOG_VALUE_MAX_CHARS = 80
+LOG_VALUE_HEAD_CHARS = 60
+LOG_LIST_HEAD_ITEMS = 3
+
+
+def shorten_log_value(value: Any) -> Any:
+    """ログに出す params の値を丸める。80 字以下の文字列や文字列以外はそのまま返す。
+
+    カンマ区切りのリストは先頭 3 件、それ以外は先頭 60 字だけ残す。
+    """
+    if not isinstance(value, str) or len(value) <= LOG_VALUE_MAX_CHARS:
+        return value
+    items = value.split(",")
+    if len(items) > LOG_LIST_HEAD_ITEMS:
+        head = ",".join(items[:LOG_LIST_HEAD_ITEMS])
+        return f"{head}…(+{len(items) - LOG_LIST_HEAD_ITEMS} items)"
+    return f"{value[:LOG_VALUE_HEAD_CHARS]}…(+{len(value) - LOG_VALUE_HEAD_CHARS} chars)"
 
 
 class SourceError(Exception):
@@ -64,7 +82,8 @@ class RetryingClient:
         attempt = 0
         while True:
             self.request_count += 1
-            log.info("%s GET %s %s", self.label, url, params or "")
+            shown = {k: shorten_log_value(v) for k, v in params.items()} if params else ""
+            log.info("%s GET %s %s", self.label, url, shown)
             try:
                 resp = self._http.get(url, params=params, headers=headers, timeout=TIMEOUT_SECONDS)
             except (httpx.TransportError, httpx.TimeoutException) as e:
