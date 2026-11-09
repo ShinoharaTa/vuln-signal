@@ -5,6 +5,7 @@ https://docs.typesafe.ai/
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,8 @@ from vuln_signal.sources.http import RETRY_WAITS, RetryingClient, SourceError
 BASE_URL = "https://api.typesafe.ai/v1/systemone"
 # 設定ミス（キー・リクエストの形）なので続けても無駄な応答
 FATAL_STATUS = {400, 401, 422}
+# Retry-After をそのまま待つ上限（秒）
+MAX_RETRY_AFTER = 120.0
 
 
 class JevError(SourceError):
@@ -92,12 +95,17 @@ def _retry_after(resp: httpx.Response | None) -> float | None:
     if resp is None or resp.status_code != 429:
         return None
     value = resp.headers.get("retry-after")
+    if value is None:
+        return None
     try:
-        seconds = float(value) if value is not None else None
+        seconds = float(value)
     except ValueError:
         # HTTP-date 形式は扱わずバックオフにする
         return None
-    return seconds if seconds is not None and seconds >= 0 else None
+    # inf / nan / 負値はバックオフ。長すぎる値は MAX_RETRY_AFTER で切る
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER)
 
 
 class JevClient(RetryingClient):

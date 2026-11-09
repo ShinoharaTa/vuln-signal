@@ -155,3 +155,26 @@ def test_parse_response_defaults():
     res = parse_response(data, QUESTIONS, "jev-latest")
     assert res.model == "jev-latest"
     assert res.input_tokens is None
+
+
+@pytest.mark.parametrize(
+    ("value", "wait"),
+    [
+        ("86400", 120.0),
+        ("1e400", 10.0),
+        ("inf", 10.0),
+        ("nan", 10.0),
+        ("-5", 10.0),
+        ("Wed, 21 Oct 2099 07:28:00 GMT", 10.0),
+    ],
+)
+@respx.mock
+def test_retry_after_is_clamped_or_ignored(fake_sleep, value, wait):
+    respx.post(BASE_URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": value}),
+            httpx.Response(200, json=_answer()),
+        ]
+    )
+    _client(fake_sleep).ask("m", "s", QUESTIONS)
+    assert fake_sleep.calls == [wait]
