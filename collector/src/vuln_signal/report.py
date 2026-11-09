@@ -3,6 +3,7 @@
 「新規公開」は cve.published が窓内の CVE、「初出」は作業 DB に初めて入った CVE
 （cve_event の kind='first_seen'）。lastModified で取るので初出には古い CVE も混じる。
 tier の「窓内の新規」は first_seen / ghsa_first_seen が窓内の subject の現在の tier。
+triage の「窓内」は llm_triage.requested_at が窓内のもの。tier 行との突き合わせは LLM の精度確認用。
 """
 
 from __future__ import annotations
@@ -41,6 +42,15 @@ class Report:
     tier_upgrades: int = 0
     # 窓内に初出した subject で kernel_thinned で P3 になったもの
     kernel_thinned: int = 0
+    # llm_triage の総行数
+    triage_rows: int = 0
+    # 窓内に問い合わせて candidate=1 のもの、と stack 別の内訳
+    triage_candidates: int = 0
+    triage_stacks: dict[str, int] = field(default_factory=dict)
+    # 窓内の candidate=1 のうち tier 行があるもの（後からルールでも対象スタックになった）
+    triage_with_tier: int = 0
+    # 窓内に問い合わせて tier 行があるのに candidate=0 のもの（見逃し）
+    triage_missed: int = 0
 
     @property
     def p0_p1_new_per_day(self) -> float:
@@ -115,6 +125,25 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         window,
     ).fetchone()[0]
 
+    triage_window = "requested_at >= ? AND requested_at <= ?"
+    triage_stacks = {
+        row["stack"]: row["n"]
+        for row in conn.execute(
+            f"SELECT stack, COUNT(*) AS n FROM llm_triage WHERE candidate = 1 AND {triage_window} "
+            "GROUP BY stack ORDER BY stack",
+            window,
+        )
+    }
+    with_tier = "EXISTS (SELECT 1 FROM tier WHERE tier.subject_id = llm_triage.subject_id)"
+    triage_with_tier = conn.execute(
+        f"SELECT COUNT(*) FROM llm_triage WHERE candidate = 1 AND {triage_window} AND {with_tier}",
+        window,
+    ).fetchone()[0]
+    triage_missed = conn.execute(
+        f"SELECT COUNT(*) FROM llm_triage WHERE candidate = 0 AND {triage_window} AND {with_tier}",
+        window,
+    ).fetchone()[0]
+
     state = [(r["source"], r["last_ok_at"], r["last_error"]) for r in store.list_sync_state()]
     return Report(
         since,
@@ -133,6 +162,11 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         tier_new=tier_new,
         tier_upgrades=tier_upgrades,
         kernel_thinned=kernel_thinned,
+        triage_rows=store.count_rows("llm_triage"),
+        triage_candidates=sum(triage_stacks.values()),
+        triage_stacks=triage_stacks,
+        triage_with_tier=triage_with_tier,
+        triage_missed=triage_missed,
     )
 
 
@@ -173,6 +207,15 @@ def format_report(rep: Report) -> str:
         f"P0+P1 new per day: {rep.p0_p1_new_per_day:.1f}",
         f"tier upgrades in window: {rep.tier_upgrades}",
         f"kernel thinned (P3) in window: {rep.kernel_thinned}",
+        "",
+        f"triage rows: {rep.triage_rows}",
+        f"triage candidates (window): {rep.triage_candidates}",
+        _table(
+            ("triage candidate stack", "count"),
+            list(rep.triage_stacks.items()) or [("(none)", 0)],
+        ),
+        f"triage candidates with tier (window): {rep.triage_with_tier}",
+        f"triage missed (tier but not candidate, window): {rep.triage_missed}",
         "",
         _table(
             ("source", "last_ok_at", "last_error"), list(rep.sync_state) or [("(none)", None, None)]

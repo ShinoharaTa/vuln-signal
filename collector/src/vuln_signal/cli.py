@@ -1,4 +1,7 @@
-"""コマンドライン: vuln-signal sync nvd|kev|epss|ghsa|all / classify / report / db path。"""
+"""コマンドライン。
+
+vuln-signal sync nvd|kev|epss|ghsa|all / classify / triage / report / db path。
+"""
 
 from __future__ import annotations
 
@@ -15,10 +18,12 @@ from vuln_signal.report import build_report, format_report
 from vuln_signal.rules import TIERS
 from vuln_signal.sources.epss import EpssClient
 from vuln_signal.sources.ghsa import GhsaClient
+from vuln_signal.sources.jev import JevClient
 from vuln_signal.sources.kev import KevClient
 from vuln_signal.sources.nvd import NvdClient
 from vuln_signal.store import Store, db_path, iso, parse_iso
 from vuln_signal.sync import SOURCE_CLASSIFY, classify, sync_epss, sync_ghsa, sync_kev, sync_nvd
+from vuln_signal.triage import triage
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 sync_app = typer.Typer(no_args_is_help=True, help="一次ソースから取得して作業 DB に反映する。")
@@ -226,6 +231,53 @@ def _run_classify(cfg: Config, all_subjects: bool, dry_run: bool) -> bool:
     return True
 
 
+def _run_triage(cfg: Config, limit: int | None, dry_run: bool) -> bool:
+    # dry-run は API を呼ばないのでキーが無くても対象を数える
+    if not dry_run and not cfg.typesafe_api_key:
+        typer.echo("triage skipped: TYPESAFE_API_KEY not set")
+        return True
+    try:
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            client = None
+            if not dry_run:
+                client = JevClient(cfg.typesafe_api_key)
+                stack.callback(client.close)
+            result = triage(
+                store,
+                client,
+                _now(),
+                model=cfg.jev_model,
+                min_confidence=cfg.jev_min_confidence,
+                max_per_run=cfg.jev_max_per_run if limit is None else limit,
+                max_chars=cfg.jev_max_chars,
+                dry_run=dry_run,
+            )
+    except Exception as e:
+        text = f"{type(e).__name__}: {e}"
+        if cfg.typesafe_api_key:
+            text = text.replace(cfg.typesafe_api_key, "***")
+        typer.echo(f"triage failed: {text}", err=True)
+        return False
+
+    typer.echo(f"triage jev model {cfg.jev_model}{_dry_label(dry_run)}")
+    typer.echo(f"targets: {result.targets}")
+    typer.echo(f"limit: {result.limit}")
+    if dry_run:
+        typer.echo(f"first: {', '.join(result.preview) or '-'}")
+        return True
+    typer.echo(f"requested: {result.requested}")
+    typer.echo(f"failed: {result.failed}")
+    typer.echo(f"candidates: {result.candidates}")
+    for kind, n in sorted(result.kinds.items()):
+        typer.echo(f"kind {kind}: {n}")
+    for stack_name, n in sorted(result.stacks.items()):
+        typer.echo(f"stack {stack_name}: {n}")
+    typer.echo(f"input_tokens: {result.input_tokens}")
+    return True
+
+
 def _exit_on_failure(ok: bool) -> None:
     if not ok:
         raise typer.Exit(1)
@@ -262,9 +314,10 @@ def sync_ghsa_cmd(since: SinceOption = None, dry_run: DryRunOption = False) -> N
 
 @sync_app.command("all")
 def sync_all_cmd(dry_run: DryRunOption = False) -> None:
-    """nvd → kev → ghsa → epss → classify の順に実行する。
+    """nvd → kev → ghsa → epss → classify → triage の順に実行する。
 
-    失敗があっても残りを続け（classify も走らせる）、最後に exit 1。
+    失敗があっても残りを続け（classify / triage も走らせる）、最後に exit 1。
+    triage は TYPESAFE_API_KEY が無ければスキップする。
     """
     cfg = config.load()
     runs = [
@@ -273,6 +326,7 @@ def sync_all_cmd(dry_run: DryRunOption = False) -> None:
         lambda: _run_ghsa(cfg, None, dry_run),
         lambda: _run_epss(cfg, False, dry_run),
         lambda: _run_classify(cfg, False, dry_run),
+        lambda: _run_triage(cfg, None, dry_run),
     ]
     results = []
     for i, run in enumerate(runs):
@@ -293,6 +347,19 @@ def classify_cmd(
 ) -> None:
     """作業 DB の内容からスタックと tier（P0〜P3）をルールで判定する（shadow）。"""
     _exit_on_failure(_run_classify(config.load(), all_subjects, dry_run))
+
+
+@app.command("triage")
+def triage_cmd(
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="この実行で送る CVE の上限（既定 JEV_MAX_PER_RUN）")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="対象件数と先頭 5 件の ID を出すだけで API を呼ばない")
+    ] = False,
+) -> None:
+    """ルールで決まらない CVE を Jev（TypeSafe）で仕分けて llm_triage に記録する（shadow）。"""
+    _exit_on_failure(_run_triage(config.load(), limit, dry_run))
 
 
 @app.command()
