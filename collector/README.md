@@ -5,11 +5,12 @@
 
 | ソース | コマンド | 取得するもの | 主なイベント |
 |---|---|---|---|
-| NVD CVE API 2.0 | `sync nvd` | lastModified の範囲の CVE | `first_seen` / `cvss_v31_changed` / `cvss_v40_changed` / `status_changed` |
+| NVD CVE API 2.0 | `sync nvd` | lastModified の範囲の CVE | `first_seen` / `cvss_v31_changed` / `cvss_v40_changed` / `status_changed` / `source_changed` / `cpe_changed` |
 | CISA KEV | `sync kev` | カタログ全体（ETag で条件付き GET） | `kev_added` / `kev_removed` / `kev_ransomware_changed` |
 | FIRST EPSS | `sync epss` | 直近の CVE・KEV・GHSA の CVE の EPSS（1 日 1 回） | `epss_changed`（score +0.2 以上、または percentile 0.9 を跨ぐ） |
 | GitHub Advisory（npm、reviewed） | `sync ghsa` | modified の範囲の advisory | `ghsa_first_seen` / `ghsa_severity_changed` / `ghsa_patched_changed` / `ghsa_withdrawn` / `ghsa_cve_assigned` / `ghsa_cve_changed` |
 
+- NVD の `cpe_changed` は after に追加分 `+cpe...` と削除分 `-cpe...` を改行区切りで入れる（2,000 字を超えたら切って `…(+N)`）。`source_changed` は CNA（sourceIdentifier）の変化。
 - KEV は初回（`kev` が空）だけ全件を入れてイベントを出さない（出力に `bootstrap: true`）。件数が既存の 90% 未満の配信は失敗にする。
 - EPSS は当日分（UTC 14:00 以降は今日、それより前は昨日）を取得済みならスキップする。`--force` で取り直す。
 - GHSA で CVE の無いものは `cve_event.cve_id` に GHSA ID を入れる。

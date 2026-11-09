@@ -6,11 +6,11 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 import respx
-from conftest import load_fixture
+from conftest import load_fixture, make_cve
 
 from vuln_signal.sources.nvd import BASE_URL, NvdClient, NvdError
 from vuln_signal.store import Store
-from vuln_signal.sync import sync_nvd
+from vuln_signal.sync import cpe_diff_text, diff_events, sync_nvd
 
 NOW1 = datetime(2099, 1, 2, 0, 0, tzinfo=UTC)
 NOW2 = datetime(2099, 1, 2, 0, 30, tzinfo=UTC)
@@ -268,3 +268,46 @@ def test_old_cve_recently_modified_is_first_seen_but_not_new(store, fake_sleep):
     assert result.new == 1
     kinds = {(r[0], r[2], r[4]) for r in _events(store)}
     assert ("CVE-2019-9999", "first_seen", "2019-05-01T00:00:00Z") in kinds
+
+
+CPE_A = "cpe:2.3:a:acme:a:1.0:*:*:*:*:*:*:*"
+CPE_B = "cpe:2.3:a:acme:b:1.0:*:*:*:*:*:*:*"
+CPE_C = "cpe:2.3:a:acme:c:1.0:*:*:*:*:*:*:*"
+
+
+def _stored(store, **kw):
+    store.upsert_cve(make_cve("CVE-2099-0001", **kw), "x")
+    return store.get_cve("CVE-2099-0001")
+
+
+def test_cpe_changed_lists_added_and_removed(store):
+    old = _stored(store, cpe_criteria=[CPE_A, CPE_B])
+    events = diff_events(old, make_cve("CVE-2099-0001", cpe_criteria=[CPE_B, CPE_C]))
+    assert events == [("cpe_changed", None, f"+{CPE_C}\n-{CPE_A}")]
+    # 順序だけの違いは変化にしない
+    assert diff_events(old, make_cve("CVE-2099-0001", cpe_criteria=[CPE_B, CPE_A])) == []
+
+
+def test_cpe_and_source_not_on_first_seen():
+    rec = make_cve("CVE-2099-0001", cpe_criteria=[CPE_A])
+    assert diff_events(None, rec) == [("first_seen", None, None)]
+
+
+def test_source_changed(store):
+    old = _stored(store, source_identifier="a@example.invalid")
+    events = diff_events(old, make_cve("CVE-2099-0001", source_identifier="b@example.invalid"))
+    assert events == [("source_changed", "a@example.invalid", "b@example.invalid")]
+
+
+def test_cpe_diff_text_truncates():
+    added = [f"cpe:2.3:a:acme:p{i:03d}:1.0:*:*:*:*:*:*:*" for i in range(100)]
+    text = cpe_diff_text([], added)
+    assert len(text) <= 2000
+    lines = text.split("\n")
+    kept = lines[:-1]
+    assert kept == [f"+{c}" for c in added[: len(kept)]]
+    assert lines[-1] == f"…(+{100 - len(kept)})"
+    # ちょうど収まるなら切らない
+    assert cpe_diff_text([], added[:3], limit=len("\n".join(f"+{c}" for c in added[:3]))) == (
+        "\n".join(f"+{c}" for c in added[:3])
+    )

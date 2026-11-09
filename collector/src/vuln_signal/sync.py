@@ -32,6 +32,8 @@ SOURCE_CLASSIFY = "classify"
 SOURCE_RULES = "rules"
 # 浮動小数の誤差で閾値ちょうどを取りこぼさないための幅
 _EPS = 1e-9
+# cpe_changed の after の最大文字数（超えたら切って末尾に …(+N)）
+CPE_DIFF_MAX_CHARS = 2000
 # 前回カーソルから少し戻して取り、境界の取りこぼしを防ぐ
 CURSOR_OVERLAP = timedelta(minutes=5)
 
@@ -55,6 +57,23 @@ def _cvss_text(score: float | None, vector: str | None) -> str | None:
     return " ".join(str(v) for v in (score, vector) if v is not None)
 
 
+def cpe_diff_text(before: list[str], after: list[str], limit: int = CPE_DIFF_MAX_CHARS) -> str:
+    """追加分を +cpe、削除分を -cpe の改行区切りにする。limit を超えたら切って …(+N) を付ける。"""
+    old, new = set(before), set(after)
+    lines = [f"+{c}" for c in sorted(new - old)] + [f"-{c}" for c in sorted(old - new)]
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        suffix = f"…(+{len(lines) - i - 1})"
+        # この行を入れても、残りの件数を付けて limit に収まるか
+        if len("\n".join([*kept, line, suffix])) > limit:
+            break
+        kept.append(line)
+    return "\n".join([*kept, f"…(+{len(lines) - len(kept)})"])
+
+
 def diff_events(old: sqlite3.Row | None, new: CveRecord) -> list[Event]:
     """既存行と新しいレコードの差分をイベントにする。last_modified だけの変化は対象外。"""
     if old is None:
@@ -68,6 +87,11 @@ def diff_events(old: sqlite3.Row | None, new: CveRecord) -> list[Event]:
             events.append((f"cvss_{ver}_changed", before, after))
     if old["vuln_status"] != new.vuln_status:
         events.append(("status_changed", old["vuln_status"], new.vuln_status))
+    if old["source_identifier"] != new.source_identifier:
+        events.append(("source_changed", old["source_identifier"], new.source_identifier))
+    old_cpe = json.loads(old["cpe_criteria"] or "[]")
+    if sorted(old_cpe) != sorted(new.cpe_criteria):
+        events.append(("cpe_changed", None, cpe_diff_text(old_cpe, new.cpe_criteria)))
     return events
 
 
