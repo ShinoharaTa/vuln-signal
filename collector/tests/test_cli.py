@@ -14,7 +14,9 @@ NPM_PKG = "cpe:2.3:a:acme:widget:1.0.0:*:*:*:*:node.js:*:*"
 def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("VULN_SIGNAL_ENV_FILE", str(tmp_path / "nope"))
     monkeypatch.setenv("VULN_SIGNAL_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(tmp_path / "no-rules.toml"))
+    # 明示したファイルは存在が必要なので空の rules.toml を置く（既定値になる）
+    (tmp_path / "rules.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(tmp_path / "rules.toml"))
     monkeypatch.delenv("NVD_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
@@ -303,3 +305,11 @@ def test_classify_bad_rules_file_exit_1(tmp_path, monkeypatch):
     res = CliRunner().invoke(cli.app, ["classify"])
     assert res.exit_code == 1
     assert "classify failed: RulesError: unknown key in thresholds: unknown" in res.output
+
+
+def test_classify_explicit_rules_file_missing_exit_1(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(tmp_path / "missing.toml"))
+    res = CliRunner().invoke(cli.app, ["classify"])
+    assert res.exit_code == 1
+    assert "classify failed: RulesError: rules file not found" in res.output

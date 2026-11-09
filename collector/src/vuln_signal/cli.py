@@ -187,7 +187,7 @@ def _run_ghsa(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
 def _run_classify(cfg: Config, all_subjects: bool, dry_run: bool) -> bool:
     try:
         with ExitStack() as stack:
-            rules = config.load_rules(cfg.rules_file)
+            rules = config.load_rules(cfg.rules_file, required=cfg.rules_file_required)
             store = Store.open(cfg.data_dir)
             stack.callback(store.close)
             result = classify(store, rules, _now(), all_subjects=all_subjects, dry_run=dry_run)

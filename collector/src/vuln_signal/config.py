@@ -32,6 +32,8 @@ class Config:
     ghsa_initial_lookback_hours: int = DEFAULT_INITIAL_LOOKBACK_HOURS
     epss_window_days: int = DEFAULT_EPSS_WINDOW_DAYS
     rules_file: Path = field(default_factory=lambda: Path(DEFAULT_RULES_FILE).expanduser())
+    # VULN_SIGNAL_RULES_FILE で明示した（無ければエラーにする）
+    rules_file_required: bool = False
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -81,6 +83,7 @@ def from_mapping(env: Mapping[str, str]) -> Config:
         ),
         epss_window_days=_int("EPSS_WINDOW_DAYS", DEFAULT_EPSS_WINDOW_DAYS),
         rules_file=Path(env.get("VULN_SIGNAL_RULES_FILE") or DEFAULT_RULES_FILE).expanduser(),
+        rules_file_required=bool(env.get("VULN_SIGNAL_RULES_FILE")),
     )
 
 
@@ -172,11 +175,13 @@ def parse_rules(data: Mapping[str, Any]) -> Rules:
     return Rules(Thresholds(**values), tuple(extra))
 
 
-def load_rules(path: Path) -> Rules:
-    """rules.toml を読む。ファイルが無ければ既定値。"""
+def load_rules(path: Path, *, required: bool = False) -> Rules:
+    """rules.toml を読む。ファイルが無ければ既定値（required ならエラー）。"""
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        if required:
+            raise RulesError(f"rules file not found: {path}") from e
         return Rules()
     try:
         data = tomllib.loads(text)

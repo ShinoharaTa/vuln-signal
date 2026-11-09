@@ -80,6 +80,22 @@ def test_rules_file_from_env(tmp_path):
         }
     )
     assert cfg.rules_file == tmp_path / "r.toml"
+    assert cfg.rules_file_required
+
+
+def test_default_rules_file_not_required(tmp_path):
+    cfg = config.load(
+        {"VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"), "VULN_SIGNAL_RULES_FILE": ""}
+    )
+    assert not cfg.rules_file_required
+
+
+def test_required_rules_file_missing_is_error(tmp_path):
+    with pytest.raises(config.RulesError, match="not found"):
+        config.load_rules(tmp_path / "nope.toml", required=True)
+    p = tmp_path / "rules.toml"
+    p.write_text("", encoding="utf-8")
+    assert config.load_rules(p, required=True) == config.Rules()
 
 
 def test_missing_rules_file_uses_defaults(tmp_path):
