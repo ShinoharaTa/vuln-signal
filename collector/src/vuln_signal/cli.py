@@ -1,4 +1,4 @@
-"""コマンドライン: vuln-signal sync nvd|kev|epss|ghsa|all / report / db path。"""
+"""コマンドライン: vuln-signal sync nvd|kev|epss|ghsa|all / classify / report / db path。"""
 
 from __future__ import annotations
 
@@ -10,14 +10,15 @@ from typing import Annotated
 import typer
 
 from vuln_signal import config
-from vuln_signal.config import Config
+from vuln_signal.config import Config, RulesError
 from vuln_signal.report import build_report, format_report
+from vuln_signal.rules import TIERS
 from vuln_signal.sources.epss import EpssClient
 from vuln_signal.sources.ghsa import GhsaClient
 from vuln_signal.sources.kev import KevClient
 from vuln_signal.sources.nvd import NvdClient
 from vuln_signal.store import Store, db_path, iso, parse_iso
-from vuln_signal.sync import sync_epss, sync_ghsa, sync_kev, sync_nvd
+from vuln_signal.sync import SOURCE_CLASSIFY, classify, sync_epss, sync_ghsa, sync_kev, sync_nvd
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 sync_app = typer.Typer(no_args_is_help=True, help="一次ソースから取得して作業 DB に反映する。")
@@ -183,6 +184,48 @@ def _run_ghsa(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
     return True
 
 
+def _record_classify_error(cfg: Config, text: str) -> None:
+    """classify の外（ルール読み込み）で失敗したときも sync_state に残す。開けなければ諦める。"""
+    try:
+        store = Store.open(cfg.data_dir)
+    except Exception:
+        return
+    try:
+        store.mark_sync_error(SOURCE_CLASSIFY, iso(_now()), text)
+    except Exception:
+        pass
+    finally:
+        store.close()
+
+
+def _run_classify(cfg: Config, all_subjects: bool, dry_run: bool) -> bool:
+    try:
+        rules = config.load_rules(cfg.rules_file, required=cfg.rules_file_required)
+    except RulesError as e:
+        text = f"{type(e).__name__}: {e}"
+        if not dry_run:
+            _record_classify_error(cfg, text)
+        typer.echo(f"classify failed: {text}", err=True)
+        return False
+    try:
+        with ExitStack() as stack:
+            store = Store.open(cfg.data_dir)
+            stack.callback(store.close)
+            result = classify(store, rules, _now(), all_subjects=all_subjects, dry_run=dry_run)
+    except Exception as e:
+        typer.echo(f"classify failed: {type(e).__name__}: {e}", err=True)
+        return False
+
+    mode = "all" if result.all else "diff"
+    typer.echo(f"classify {mode} rules_version {result.rules_version}{_dry_label(dry_run)}")
+    typer.echo(f"targets: {result.targets}")
+    for tier in (*TIERS, "excluded"):
+        typer.echo(f"tier {tier}: {result.tiers[tier]}")
+    for kind in ("up", "down", "new", "removed"):
+        typer.echo(f"tier_changed {kind}: {result.changes[kind]}")
+    return True
+
+
 def _exit_on_failure(ok: bool) -> None:
     if not ok:
         raise typer.Exit(1)
@@ -219,13 +262,17 @@ def sync_ghsa_cmd(since: SinceOption = None, dry_run: DryRunOption = False) -> N
 
 @sync_app.command("all")
 def sync_all_cmd(dry_run: DryRunOption = False) -> None:
-    """nvd → kev → ghsa → epss の順に実行する。失敗があっても残りを続け、最後に exit 1。"""
+    """nvd → kev → ghsa → epss → classify の順に実行する。
+
+    失敗があっても残りを続け（classify も走らせる）、最後に exit 1。
+    """
     cfg = config.load()
     runs = [
         lambda: _run_nvd(cfg, None, dry_run),
         lambda: _run_kev(cfg, dry_run),
         lambda: _run_ghsa(cfg, None, dry_run),
         lambda: _run_epss(cfg, False, dry_run),
+        lambda: _run_classify(cfg, False, dry_run),
     ]
     results = []
     for i, run in enumerate(runs):
@@ -233,6 +280,19 @@ def sync_all_cmd(dry_run: DryRunOption = False) -> None:
             typer.echo("")
         results.append(run())
     _exit_on_failure(all(results))
+
+
+@app.command("classify")
+def classify_cmd(
+    all_subjects: Annotated[
+        bool, typer.Option("--all", help="変化の有無によらず全 subject を判定し直す")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="判定して件数を出すだけで書かない")
+    ] = False,
+) -> None:
+    """作業 DB の内容からスタックと tier（P0〜P3）をルールで判定する（shadow）。"""
+    _exit_on_failure(_run_classify(config.load(), all_subjects, dry_run))
 
 
 @app.command()

@@ -112,3 +112,47 @@ def test_cli_db_path_and_report(tmp_path, monkeypatch):
     res = runner.invoke(app, ["report", "--days", "1"])
     assert res.exit_code == 0, res.output
     assert "new CVEs" in res.output
+
+
+def _tier(store, subject, tier, reasons=("in_stack",)):
+    store.upsert_tier(subject, tier, ["npm"], list(reasons), {}, "v", IN_WINDOW)
+
+
+def test_report_tier_rows(store):
+    _seed(store)
+    _tier(store, "CVE-2099-1001", "P0", ["kev"])
+    _tier(store, "CVE-2099-1003", "P1", ["cvss"])
+    _tier(store, "CVE-2099-1002", "P3", ["cvss", "kernel_thinned"])
+    _tier(store, "GHSA-xxxx-xxxx-xxxx", "P1", ["ghsa_severity"])
+    # 窓の外に初出したもの: current だけに数える
+    _tier(store, "CVE-2099-1005", "P0", ["kev"])
+    _tier(store, "CVE-2099-1004", "P2")
+    ev = [
+        ("CVE-2099-1001", None, "P0"),  # 新規で P0: 上がった
+        ("CVE-2099-1003", None, "P2"),  # 新規で P2: 数えない
+        ("CVE-2099-1003", "P2", "P1"),  # 上がった
+        ("CVE-2099-1004", "P1", "P2"),  # 下がった
+        ("CVE-2099-1004", "P1", None),  # 対象外へ
+    ]
+    for subject, before, after in ev:
+        store.add_event(subject, IN_WINDOW, "tier_changed", before, after, "rules")
+    store.add_event("CVE-2099-1005", OLD, "tier_changed", "P1", "P0", "rules")
+
+    rep = build_report(store, NOW, days=2)
+    assert rep.tier_current == {"P0": 2, "P1": 2, "P2": 1, "P3": 1}
+    assert rep.tier_new == {"P0": 1, "P1": 2, "P2": 1, "P3": 1}
+    assert rep.p0_p1_new_per_day == 1.5
+    assert rep.tier_upgrades == 2
+    assert rep.kernel_thinned == 1
+
+    lines = format_report(rep).splitlines()
+    assert ["P0", "2", "1"] in [line.split() for line in lines]
+    assert "P0+P1 new per day: 1.5" in lines
+    assert "tier upgrades in window: 2" in lines
+    assert "kernel thinned (P3) in window: 1" in lines
+
+
+def test_report_tier_rows_empty(store):
+    lines = format_report(build_report(store, NOW, days=3)).splitlines()
+    assert ["P1", "0", "0"] in [line.split() for line in lines]
+    assert "P0+P1 new per day: 0.0" in lines

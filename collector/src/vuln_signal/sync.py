@@ -8,6 +8,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+from vuln_signal import rules as tier_rules
+from vuln_signal.config import Rules
 from vuln_signal.sources.epss import EpssClient, EpssRecord
 from vuln_signal.sources.ghsa import GhsaClient, GhsaRecord
 from vuln_signal.sources.kev import KevClient, KevError, KevRecord
@@ -25,8 +27,13 @@ EPSS_PERCENTILE_HIGH = 0.9
 # FIRST が当日のモデルを出し終える目安の時刻（UTC）。これより前は前日分が最新
 EPSS_PUBLISH_HOUR_UTC = 14
 SOURCE_GHSA = "ghsa"
+SOURCE_CLASSIFY = "classify"
+# tier_changed イベントの source
+SOURCE_RULES = "rules"
 # 浮動小数の誤差で閾値ちょうどを取りこぼさないための幅
 _EPS = 1e-9
+# cpe_changed の after の最大文字数（超えたら切って末尾に …(+N)）
+CPE_DIFF_MAX_CHARS = 2000
 # 前回カーソルから少し戻して取り、境界の取りこぼしを防ぐ
 CURSOR_OVERLAP = timedelta(minutes=5)
 
@@ -50,6 +57,23 @@ def _cvss_text(score: float | None, vector: str | None) -> str | None:
     return " ".join(str(v) for v in (score, vector) if v is not None)
 
 
+def cpe_diff_text(before: list[str], after: list[str], limit: int = CPE_DIFF_MAX_CHARS) -> str:
+    """追加分を +cpe、削除分を -cpe の改行区切りにする。limit を超えたら切って …(+N) を付ける。"""
+    old, new = set(before), set(after)
+    lines = [f"+{c}" for c in sorted(new - old)] + [f"-{c}" for c in sorted(old - new)]
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        suffix = f"…(+{len(lines) - i - 1})"
+        # この行を入れても、残りの件数を付けて limit に収まるか
+        if len("\n".join([*kept, line, suffix])) > limit:
+            break
+        kept.append(line)
+    return "\n".join([*kept, f"…(+{len(lines) - len(kept)})"])
+
+
 def diff_events(old: sqlite3.Row | None, new: CveRecord) -> list[Event]:
     """既存行と新しいレコードの差分をイベントにする。last_modified だけの変化は対象外。"""
     if old is None:
@@ -63,6 +87,11 @@ def diff_events(old: sqlite3.Row | None, new: CveRecord) -> list[Event]:
             events.append((f"cvss_{ver}_changed", before, after))
     if old["vuln_status"] != new.vuln_status:
         events.append(("status_changed", old["vuln_status"], new.vuln_status))
+    if old["source_identifier"] != new.source_identifier:
+        events.append(("source_changed", old["source_identifier"], new.source_identifier))
+    old_cpe = json.loads(old["cpe_criteria"] or "[]")
+    if sorted(old_cpe) != sorted(new.cpe_criteria):
+        events.append(("cpe_changed", None, cpe_diff_text(old_cpe, new.cpe_criteria)))
     return events
 
 
@@ -408,5 +437,93 @@ def sync_ghsa(
     except Exception as e:
         if not dry_run:
             store.mark_sync_error(SOURCE_GHSA, now_s, client.redact(f"{type(e).__name__}: {e}"))
+        raise
+    return result
+
+
+@dataclass
+class ClassifyResult:
+    rules_version: str
+    all: bool = False
+    targets: int = 0
+    # 今回判定した subject の tier 別件数（対象外は "excluded"）
+    tiers: Counter[str] = field(default_factory=Counter)
+    # tier_changed の内訳: up / down / new / removed
+    changes: Counter[str] = field(default_factory=Counter)
+
+
+def _change_kind(before: str | None, after: str | None) -> str:
+    if before is None:
+        return "new"
+    if after is None:
+        return "removed"
+    # P0 < P1 < ... の順なので文字列比較で上下が分かる
+    return "up" if after < before else "down"
+
+
+def classify(
+    store: Store,
+    rules: Rules,
+    now: datetime,
+    *,
+    all_subjects: bool = False,
+    dry_run: bool = False,
+) -> ClassifyResult:
+    """変化のあった subject（all_subjects なら全部）をルールで判定し、tier に反映する。
+
+    cursor は処理した最大の cve_event.id。tier が変わったときだけ tier_changed を積む。
+    dry_run では判定して数えるだけで書かない（sync_state も触らない）。
+    失敗時は sync_state の last_run_at と last_error だけを更新し、例外を投げ直す。
+    """
+    now_s = iso(now)
+    result = ClassifyResult(rules_version=rules.version, all=all_subjects)
+    try:
+        state = store.get_sync_state(SOURCE_CLASSIFY)
+        cursor = int(state["cursor"]) if state is not None and state["cursor"] else 0
+        last_ok = state["last_ok_at"] if state is not None else None
+        upto = store.max_event_id()
+        if all_subjects:
+            subjects = store.all_subjects()
+        else:
+            subjects = store.changed_subjects(cursor, upto, last_ok)
+        result.targets = len(subjects)
+
+        def _apply() -> None:
+            for subject in subjects:
+                inputs = tier_rules.collect_inputs(store, subject)
+                decision = tier_rules.evaluate(inputs, rules)
+                old = store.get_tier(subject)
+                before = old["tier"] if old is not None else None
+                after = decision.tier if decision is not None else None
+                result.tiers[after or "excluded"] += 1
+                if before != after:
+                    result.changes[_change_kind(before, after)] += 1
+                if dry_run:
+                    continue
+                if decision is None:
+                    if old is not None:
+                        store.delete_tier(subject)
+                else:
+                    store.upsert_tier(
+                        subject,
+                        decision.tier,
+                        list(decision.stacks),
+                        list(decision.reasons),
+                        inputs.as_json(),
+                        rules.version,
+                        now_s,
+                    )
+                if before != after:
+                    store.add_event(subject, now_s, "tier_changed", before, after, SOURCE_RULES)
+
+        if dry_run:
+            _apply()
+            return result
+        with store.transaction():
+            _apply()
+            store.mark_sync_ok(SOURCE_CLASSIFY, now_s, cursor=str(upto))
+    except Exception as e:
+        if not dry_run:
+            store.mark_sync_error(SOURCE_CLASSIFY, now_s, f"{type(e).__name__}: {e}")
         raise
     return result

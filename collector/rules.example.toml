@@ -1,0 +1,21 @@
+# tier 判定のルール設定。~/.config/vuln-signal/rules.toml に置く（VULN_SIGNAL_RULES_FILE で変更）。
+# ここに書いた値はすべて既定値。書かなかったキーは既定値になり、未知のキーはエラー。
+
+[thresholds]
+# P0: CVSS がこれ以上かつ EPSS score が p0_epss 以上
+p0_cvss = 9.0
+p0_epss = 0.10
+# P1: CVSS がこれ以上、または EPSS percentile が p1_epss_percentile 以上
+p1_cvss = 7.0
+p1_epss_percentile = 0.90
+# P0: Node.js 本体で CVSS がこれ以上
+nodejs_core_cvss = 7.0
+# Linux kernel だけに当たる P1 / P2 は、CVSS がこれ以上か EPSS percentile が
+# kernel_epss_percentile 以上（または KEV）でなければ P3 に間引く
+kernel_cvss = 8.0
+kernel_epss_percentile = 0.90
+
+# 追加のスタック（extra:<name>）。CPE の criteria に前方一致したら対象にする
+# [[stack.extra]]
+# name = "nginx"
+# cpe_prefix = "cpe:2.3:a:f5:nginx:"
