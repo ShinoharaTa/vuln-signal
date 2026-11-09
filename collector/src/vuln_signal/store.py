@@ -415,14 +415,17 @@ class Store:
         return self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM cve_event").fetchone()[0]
 
     def changed_subjects(self, after_id: int, upto_id: int, epss_since: str | None) -> list[str]:
-        """判定し直す subject: (after_id, upto_id] のルール以外のイベント ∪ epss_since 以降の EPSS。
+        """判定し直す subject: (after_id, upto_id] のイベント ∪ epss_since 以降の EPSS。
+
+        ルール（tier_changed）と Jev（triage_candidate 等）のイベントは対象にしない。
 
         GHSA の CVE が付いた / 変わったときは、前の subject（GHSA ID か旧 CVE）も入れる。
         epss_since が None なら EPSS の全行。
         """
         rows = self.conn.execute(
             """
-            SELECT cve_id FROM cve_event WHERE id > :a AND id <= :b AND source != 'rules'
+            SELECT cve_id FROM cve_event WHERE id > :a AND id <= :b
+                AND source NOT IN ('rules', 'jev')
             UNION SELECT before FROM cve_event
                 WHERE id > :a AND id <= :b AND before IS NOT NULL
                 AND kind IN ('ghsa_cve_assigned', 'ghsa_cve_changed')

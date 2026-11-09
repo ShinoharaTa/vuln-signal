@@ -27,7 +27,7 @@ subject は CVE ID と、CVE の無い GHSA の GHSA ID。
   CVSS ≥ 7.0（無ければ GHSA severity high 以上）、EPSS percentile ≥ 0.90 → P1。それ以外 → P2。
   Deferred は KEV でなければ P3。kernel だけの P1 / P2 は KEV・percentile ≥ 0.90・CVSS ≥ 8.0 のどれも無ければ P3（`kernel_thinned`）。
   CVSS は各ソースで v4.0 優先、NVD と GHSA の最大。当たった規則は `tier.reasons` に入る。
-- 対象は前回から増えた `cve_event`（`tier_changed` 以外）と、前回以降に取った EPSS の CVE。`--all` で全 subject。
+- 対象は前回から増えた `cve_event`（`tier_changed` と `source` が `jev` のもの以外）と、前回以降に取った EPSS の CVE。`--all` で全 subject。
 - tier が変わったとき（新規・対象外へを含む）だけ `tier_changed`（`source` は `rules`）を積む。
 - 閾値と追加スタックは `~/.config/vuln-signal/rules.toml`（`VULN_SIGNAL_RULES_FILE` で変更）。既定パスに無ければ既定値、`VULN_SIGNAL_RULES_FILE` で指定したファイルが無ければエラー。
   書式と既定値は [`rules.example.toml`](rules.example.toml)。未知のキーはエラー。
