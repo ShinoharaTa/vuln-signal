@@ -27,11 +27,28 @@ subject は CVE ID と、CVE の無い GHSA の GHSA ID。
   CVSS ≥ 7.0（無ければ GHSA severity high 以上）、EPSS percentile ≥ 0.90 → P1。それ以外 → P2。
   Deferred は KEV でなければ P3。kernel だけの P1 / P2 は KEV・percentile ≥ 0.90・CVSS ≥ 8.0 のどれも無ければ P3（`kernel_thinned`）。
   CVSS は各ソースで v4.0 優先、NVD と GHSA の最大。当たった規則は `tier.reasons` に入る。
-- 対象は前回から増えた `cve_event`（`tier_changed` 以外）と、前回以降に取った EPSS の CVE。`--all` で全 subject。
+- 対象は前回から増えた `cve_event`（`tier_changed` と `source` が `jev` のもの以外）と、前回以降に取った EPSS の CVE。`--all` で全 subject。
 - tier が変わったとき（新規・対象外へを含む）だけ `tier_changed`（`source` は `rules`）を積む。
 - 閾値と追加スタックは `~/.config/vuln-signal/rules.toml`（`VULN_SIGNAL_RULES_FILE` で変更）。既定パスに無ければ既定値、`VULN_SIGNAL_RULES_FILE` で指定したファイルが無ければエラー。
   書式と既定値は [`rules.example.toml`](rules.example.toml)。未知のキーはエラー。
   実効設定のハッシュ（先頭 12 桁）を `rules_version` として `tier` に残す。ルールを変えたら `classify --all` で判定し直す。
+
+## 前段の仕分け（`triage`、Jev、shadow）
+
+ルールで対象スタックが決まらない CVE を TypeSafe の Jev に渡し、種別（`kind`）と対象スタックとの関係（`stack`）を固定選択肢で答えさせて `llm_triage` に記録する。tier は変えない。
+
+- 対象: 前回から増えた `first_seen` / `cpe_changed` / `source_changed` の CVE のうち、CPE が空・kernel CNA でない・GHSA に無い・Rejected でない・説明文があるもの。
+  説明文の hash（sha256 先頭 16 桁）が既存行と同じなら送らない。CVE ID 順に `JEV_MAX_PER_RUN` 件まで（`--limit` で変更）。残りは次回。
+- 送るのは `description_en`（`JEV_MAX_CHARS` 字で切る）だけ。1 CVE = 1 リクエスト（質問 2 つ）。
+- `stack` が `none` 以外で confidence ≥ `JEV_MIN_CONFIDENCE` なら `candidate = 1`。0→1 で `triage_candidate`、1→0 で `triage_candidate_cleared`（`source` は `jev`）。
+- 429 は Retry-After 秒待って再試行（120 秒で切る。無い・読めなければ 10 / 30 / 60 秒）、5xx / 529 / 接続エラーも再試行。
+  再試行切れなどの 1 件の失敗はその CVE を飛ばして `failed` に数え、1 件でもあれば cursor を進めず `last_error` に `triage: N/M requests failed; last: ...` を残す
+  （exit 0。成功分は書く。次回は失敗した CVE だけ送り直す）。
+  413 と応答の形の誤り（選択肢に無い答え・answers 欠け・JSON でない）は送り直しても直らないので、`error` 付きの行（kind / stack は `error`、candidate 0）を入れて
+  `failed` と `permanent_failed` に数える。cursor は止めず、同じ説明文は次回から送らない。401 / 400 / 422 は全体を失敗にする（exit 1、`last_error` に残す）。
+- `TYPESAFE_API_KEY` が無ければ `triage skipped: TYPESAFE_API_KEY not set` を出して何もしない（exit 0）。`--dry-run` は API を呼ばず、キーが無くても対象件数と先頭 5 件の ID を出す。
+- `report` に `triage rows`（error 行を除く）、窓内の候補数、stack（`nodejs_core` / `npm_package` / `linux_kernel` / `linux_distro_package`）ごとの候補数とそのうち tier 行があるもの、
+  tier 行があるのに候補でないもの（見逃し）を出す。`linux_distro_package` は対応するルールが無いので #8 まで比較不能。
 
 ```sh
 cd collector
@@ -47,12 +64,16 @@ uv run vuln-signal sync kev
 uv run vuln-signal sync epss
 uv run vuln-signal sync ghsa
 
-# nvd → kev → ghsa → epss → classify の順に全部。1 つ失敗しても残りを続け、最後に exit 1
+# nvd → kev → ghsa → epss → classify → triage の順に全部。1 つ失敗しても残りを続け、最後に exit 1
 uv run vuln-signal sync all
 
 # tier 判定（差分）。--all で全件、--dry-run で件数だけ
 uv run vuln-signal classify
 uv run vuln-signal classify --all --dry-run
+
+# Jev による前段の仕分け。--dry-run は API を呼ばない。--limit でこの実行の上限
+uv run vuln-signal triage --dry-run
+uv run vuln-signal triage --limit 50
 
 # 直近 N 日の件数（tier 別件数、P0+P1 の新規 / 日 を含む）
 uv run vuln-signal report --days 1
@@ -64,4 +85,6 @@ uv run pytest -q
 - env ファイル: `~/.config/vuln-signal/env`（`VULN_SIGNAL_ENV_FILE` で変更）。既に環境変数にあるキーは上書きしない。
   使う変数は `NVD_API_KEY`（空でよい）、`VULN_SIGNAL_DATA_DIR`、`NVD_INITIAL_LOOKBACK_HOURS`（初回に遡る時間、既定 24）、
   `GITHUB_TOKEN`（空でよい。無いと GitHub API は 60 req/時）、`GHSA_INITIAL_LOOKBACK_HOURS`（既定 24）、
-  `EPSS_WINDOW_DAYS`（EPSS を取る CVE の公開日・GHSA 更新日の範囲、既定 30）。
+  `EPSS_WINDOW_DAYS`（EPSS を取る CVE の公開日・GHSA 更新日の範囲、既定 30）、
+  `TYPESAFE_API_KEY`（空なら triage はスキップ）、`JEV_MODEL`（既定 `jev-latest`。応答の model を行に残す）、
+  `JEV_MIN_CONFIDENCE`（既定 0.6）、`JEV_MAX_PER_RUN`（既定 500）、`JEV_MAX_CHARS`（既定 4000）。

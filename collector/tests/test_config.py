@@ -48,6 +48,11 @@ def test_missing_env_file_uses_defaults(tmp_path):
     assert cfg.ghsa_initial_lookback_hours == 24
     assert cfg.epss_window_days == 30
     assert cfg.rules_file == Path("~/.config/vuln-signal/rules.toml").expanduser()
+    assert cfg.typesafe_api_key == ""
+    assert cfg.jev_model == "jev-latest"
+    assert cfg.jev_min_confidence == 0.6
+    assert cfg.jev_max_per_run == 500
+    assert cfg.jev_max_chars == 4000
 
 
 def test_load_does_not_modify_os_environ(tmp_path, monkeypatch):
@@ -66,10 +71,35 @@ def test_api_key_not_in_repr(tmp_path):
             "VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"),
             "NVD_API_KEY": "s3cr3t",
             "GITHUB_TOKEN": "t0k3n",
+            "TYPESAFE_API_KEY": "ts-k3y",
         }
     )
     assert "s3cr3t" not in repr(cfg)
     assert "t0k3n" not in repr(cfg)
+    assert "ts-k3y" not in repr(cfg)
+
+
+def test_jev_settings_from_env(tmp_path):
+    cfg = config.load(
+        {
+            "VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"),
+            "TYPESAFE_API_KEY": "ts-k3y",
+            "JEV_MODEL": "jev-1.14.0",
+            "JEV_MIN_CONFIDENCE": "0.75",
+            "JEV_MAX_PER_RUN": "20",
+            "JEV_MAX_CHARS": "1000",
+        }
+    )
+    assert cfg.typesafe_api_key == "ts-k3y"
+    assert cfg.jev_model == "jev-1.14.0"
+    assert cfg.jev_min_confidence == 0.75
+    assert (cfg.jev_max_per_run, cfg.jev_max_chars) == (20, 1000)
+
+
+@pytest.mark.parametrize(("key", "value"), [("JEV_MAX_PER_RUN", "0"), ("JEV_MAX_CHARS", "-1")])
+def test_jev_limits_must_be_positive(tmp_path, key, value):
+    with pytest.raises(config.ConfigError, match=f"{key} must be 1 or more"):
+        config.load({"VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"), key: value})
 
 
 def test_rules_file_from_env(tmp_path):

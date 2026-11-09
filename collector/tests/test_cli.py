@@ -4,7 +4,7 @@ from conftest import load_fixture, make_cve
 from typer.testing import CliRunner
 
 from vuln_signal import cli
-from vuln_signal.sources import epss, ghsa, kev
+from vuln_signal.sources import epss, ghsa, jev, kev
 from vuln_signal.sources.nvd import BASE_URL
 from vuln_signal.store import Store
 
@@ -19,6 +19,7 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(tmp_path / "rules.toml"))
     monkeypatch.delenv("NVD_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
 
 
 @respx.mock
@@ -164,6 +165,7 @@ def test_sync_all_continues_after_failure(tmp_path, monkeypatch):
         < out.index("ghsa ")
         < out.index("epss model_date")
         < out.index("classify diff")
+        < out.index("triage skipped: TYPESAFE_API_KEY not set")
     )
     s = Store.open(tmp_path / "data")
     try:
@@ -192,8 +194,9 @@ def test_sync_all_ok_dry_run(tmp_path, monkeypatch):
     respx.get(ghsa.BASE_URL).mock(return_value=httpx.Response(200, json=[]))
     res = CliRunner().invoke(cli.app, ["sync", "all", "--dry-run"])
     assert res.exit_code == 0, res.output
-    assert res.output.count("(dry-run, not written)") == 5
+    assert res.output.count("(dry-run, not written)") == 6
     assert "classify diff rules_version" in res.output
+    assert "triage jev model jev-latest (dry-run, not written)" in res.output
     s = Store.open(tmp_path / "data")
     try:
         assert s.list_sync_state() == []
@@ -331,3 +334,106 @@ def test_classify_explicit_rules_file_missing_exit_1(tmp_path, monkeypatch):
     res = CliRunner().invoke(cli.app, ["classify"])
     assert res.exit_code == 1
     assert "classify failed: RulesError: rules file not found" in res.output
+
+
+JEV_KEY = "test-key-not-real-3333"
+
+
+def _jev_ok(stack="npm_package"):
+    answers = {
+        "kind": {"type": "choice", "choice": "library", "confidence": 0.9, "probabilities": {}},
+        "stack": {"type": "choice", "choice": stack, "confidence": 0.9, "probabilities": {}},
+    }
+    return httpx.Response(
+        200, json={"model": "jev-1.14.0", "answers": answers, "usage": {"input_tokens": 10}}
+    )
+
+
+def _seed_triage(tmp_path, n=3):
+    s = Store.open(tmp_path / "data")
+    try:
+        for i in range(1, n + 1):
+            cve_id = f"CVE-2099-{i:04d}"
+            s.upsert_cve(make_cve(cve_id, description_en=f"flaw {i}"), "x")
+            s.add_event(cve_id, "x", "first_seen", None, None, "nvd")
+    finally:
+        s.close()
+
+
+@respx.mock
+def test_triage_without_key_skips(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    _seed_triage(tmp_path)
+    route = respx.post(jev.BASE_URL).mock(return_value=_jev_ok())
+    res = CliRunner().invoke(cli.app, ["triage"])
+    assert res.exit_code == 0, res.output
+    assert res.output.strip() == "triage skipped: TYPESAFE_API_KEY not set"
+    assert route.call_count == 0
+    s = Store.open(tmp_path / "data")
+    try:
+        assert s.get_sync_state("triage") is None
+    finally:
+        s.close()
+
+
+@respx.mock
+def test_triage_dry_run_sends_nothing(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setenv("TYPESAFE_API_KEY", JEV_KEY)
+    _seed_triage(tmp_path, n=7)
+    route = respx.post(jev.BASE_URL).mock(return_value=_jev_ok())
+    res = CliRunner().invoke(cli.app, ["triage", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert "triage jev model jev-latest (dry-run, not written)" in res.output
+    assert "targets: 7" in res.output
+    assert "first: CVE-2099-0001, CVE-2099-0002, CVE-2099-0003, CVE-2099-0004, CVE-2099-0005" in (
+        res.output
+    )
+    assert route.call_count == 0
+    s = Store.open(tmp_path / "data")
+    try:
+        assert s.list_sync_state() == []
+    finally:
+        s.close()
+
+
+@respx.mock
+def test_triage_with_limit(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setenv("TYPESAFE_API_KEY", JEV_KEY)
+    _seed_triage(tmp_path)
+    route = respx.post(jev.BASE_URL).mock(return_value=_jev_ok())
+    res = CliRunner().invoke(cli.app, ["triage", "--limit", "2"])
+    assert res.exit_code == 0, res.output
+    assert route.call_count == 2
+    assert route.calls[0].request.headers["Authorization"] == f"Bearer {JEV_KEY}"
+    for line in (
+        "targets: 3",
+        "limit: 2",
+        "requested: 2",
+        "failed: 0",
+        "permanent_failed: 0",
+        "candidates: 2",
+        "kind library: 2",
+        "stack npm_package: 2",
+        "input_tokens: 20",
+    ):
+        assert line in res.output.splitlines()
+
+
+@respx.mock
+def test_triage_401_exit_1_hides_key(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setenv("TYPESAFE_API_KEY", JEV_KEY)
+    _seed_triage(tmp_path)
+    route = respx.post(jev.BASE_URL).mock(return_value=httpx.Response(401))
+    res = CliRunner().invoke(cli.app, ["triage"])
+    assert res.exit_code == 1
+    assert "triage failed: JevFatalError: HTTP 401" in res.output
+    assert JEV_KEY not in res.output
+    assert route.call_count == 1
+    s = Store.open(tmp_path / "data")
+    try:
+        assert s.get_sync_state("triage")["last_error"] == "JevFatalError: HTTP 401"
+    finally:
+        s.close()

@@ -19,7 +19,7 @@ from typing import Any
 from vuln_signal.sources.epss import EpssRecord
 from vuln_signal.sources.ghsa import GhsaRecord
 from vuln_signal.sources.kev import KevRecord
-from vuln_signal.sources.nvd import CveRecord
+from vuln_signal.sources.nvd import LINUX_KERNEL_CNA, CveRecord
 
 DB_FILENAME = "work.sqlite3"
 
@@ -134,6 +134,27 @@ MIGRATIONS: list[str] = [
         computed_at TEXT NOT NULL
     );
     CREATE INDEX tier_tier ON tier (tier);
+    """,
+    # v4: LLM（Jev）による前段の仕分け（shadow）。ルールで決まらない CVE だけ。tier は変えない
+    """
+    CREATE TABLE llm_triage (
+        subject_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,          -- 'jev'
+        model TEXT NOT NULL,             -- 応答の model
+        kind TEXT NOT NULL,
+        kind_confidence REAL NOT NULL,
+        kind_probs TEXT NOT NULL,        -- JSON
+        stack TEXT NOT NULL,
+        stack_confidence REAL NOT NULL,
+        stack_probs TEXT NOT NULL,       -- JSON
+        candidate INTEGER NOT NULL,      -- 1 = stack != 'none' かつ stack_confidence >= 閾値
+        input_tokens INTEGER,
+        description_hash TEXT NOT NULL,  -- sha256(description_en) 先頭 16 桁
+        requested_at TEXT NOT NULL,
+        error TEXT                       -- 送り直しても直らない失敗（413・応答の形）。
+                                         --   kind / stack は 'error'、candidate 0
+    );
+    CREATE INDEX llm_triage_candidate ON llm_triage (candidate);
     """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -394,14 +415,17 @@ class Store:
         return self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM cve_event").fetchone()[0]
 
     def changed_subjects(self, after_id: int, upto_id: int, epss_since: str | None) -> list[str]:
-        """判定し直す subject: (after_id, upto_id] のルール以外のイベント ∪ epss_since 以降の EPSS。
+        """判定し直す subject: (after_id, upto_id] のイベント ∪ epss_since 以降の EPSS。
+
+        ルール（tier_changed）と Jev（triage_candidate 等）のイベントは対象にしない。
 
         GHSA の CVE が付いた / 変わったときは、前の subject（GHSA ID か旧 CVE）も入れる。
         epss_since が None なら EPSS の全行。
         """
         rows = self.conn.execute(
             """
-            SELECT cve_id FROM cve_event WHERE id > :a AND id <= :b AND source != 'rules'
+            SELECT cve_id FROM cve_event WHERE id > :a AND id <= :b
+                AND source NOT IN ('rules', 'jev')
             UNION SELECT before FROM cve_event
                 WHERE id > :a AND id <= :b AND before IS NOT NULL
                 AND kind IN ('ghsa_cve_assigned', 'ghsa_cve_changed')
@@ -453,3 +477,48 @@ class Store:
 
     def delete_tier(self, subject_id: str) -> None:
         self.conn.execute("DELETE FROM tier WHERE subject_id = ?", (subject_id,))
+
+    # --- llm_triage ---
+
+    def triage_targets(self, after_id: int, upto_id: int) -> list[sqlite3.Row]:
+        """前段の仕分けの候補（CVE ID 順）。
+
+        (after_id, upto_id] に first_seen / cpe_changed / source_changed がある CVE のうち、
+        ルールで決まらないもの（CPE 無し・kernel CNA でない・GHSA 無し）で、
+        説明文があり Rejected でないもの。
+        列は id, event_id（範囲内の最小のイベント id）, description_en,
+        triage_hash（llm_triage の既存行の description_hash）。
+        """
+        return self.conn.execute(
+            """
+            SELECT c.id, MIN(e.id) AS event_id, c.description_en,
+                t.description_hash AS triage_hash
+            FROM cve_event e
+            JOIN cve c ON c.id = e.cve_id
+            LEFT JOIN llm_triage t ON t.subject_id = c.id
+            WHERE e.id > :a AND e.id <= :b
+                AND e.kind IN ('first_seen', 'cpe_changed', 'source_changed')
+                AND TRIM(COALESCE(c.description_en, '')) != ''
+                AND COALESCE(c.cpe_criteria, '[]') = '[]'
+                AND c.source_identifier IS NOT :kernel
+                AND c.vuln_status IS NOT 'Rejected'
+                AND NOT EXISTS (SELECT 1 FROM ghsa g WHERE g.cve_id = c.id)
+            GROUP BY c.id
+            ORDER BY c.id
+            """,
+            {"a": after_id, "b": upto_id, "kernel": LINUX_KERNEL_CNA},
+        ).fetchall()
+
+    def get_llm_triage(self, subject_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM llm_triage WHERE subject_id = ?", (subject_id,)
+        ).fetchone()
+
+    def upsert_llm_triage(self, row: dict[str, Any]) -> None:
+        """llm_triage の 1 行。*_probs は dict のまま渡す（キー順を揃えた JSON にする）。"""
+        row = {
+            **row,
+            "kind_probs": json.dumps(row["kind_probs"], sort_keys=True),
+            "stack_probs": json.dumps(row["stack_probs"], sort_keys=True),
+        }
+        self._upsert("llm_triage", "subject_id", row)

@@ -83,7 +83,9 @@ def test_diff_selects_only_new_non_rule_events(store):
     _put(store, _cve("CVE-2099-0002", 5.0))
     classify(store, Rules(), NOW1)
 
-    # 変化の無い 2 回目は対象 0（tier_changed は対象にしない）
+    # 変化の無い 2 回目は対象 0（tier_changed と Jev のイベントは対象にしない）
+    store.add_event("CVE-2099-0001", "x", "triage_candidate", None, "npm_package", "jev")
+    store.add_event("CVE-2099-0002", "x", "triage_candidate_cleared", "npm_package", None, "jev")
     res = classify(store, Rules(), NOW2)
     assert res.targets == 0
     assert store.get_sync_state("classify")["cursor"] == str(store.max_event_id())

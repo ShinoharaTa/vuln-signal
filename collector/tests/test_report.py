@@ -156,3 +156,65 @@ def test_report_tier_rows_empty(store):
     lines = format_report(build_report(store, NOW, days=3)).splitlines()
     assert ["P1", "0", "0"] in [line.split() for line in lines]
     assert "P0+P1 new per day: 0.0" in lines
+
+
+def _triage(store, subject, stack, candidate, at=IN_WINDOW, error=None):
+    store.upsert_llm_triage(
+        {
+            "subject_id": subject,
+            "provider": "jev",
+            "model": "jev-1.14.0",
+            "kind": "library",
+            "kind_confidence": 0.9,
+            "kind_probs": {},
+            "stack": stack,
+            "stack_confidence": 0.9,
+            "stack_probs": {},
+            "candidate": candidate,
+            "input_tokens": 1,
+            "description_hash": "h",
+            "requested_at": at,
+            "error": error,
+        }
+    )
+
+
+def test_report_triage_rows(store):
+    _triage(store, "CVE-2099-2001", "npm_package", 1)
+    _triage(store, "CVE-2099-2002", "npm_package", 1)
+    _triage(store, "CVE-2099-2003", "linux_kernel", 1)
+    _triage(store, "CVE-2099-2004", "none", 0)
+    _triage(store, "CVE-2099-2005", "npm_package", 0)
+    # 窓の外: 総行数だけに数える
+    _triage(store, "CVE-2099-2006", "npm_package", 1, at=OLD)
+    # 送り直しても直らない失敗の行: どこにも数えない
+    _triage(store, "CVE-2099-2007", "error", 0, error="JevPermanentError: HTTP 413")
+    _tier(store, "CVE-2099-2007", "P2")
+    _tier(store, "CVE-2099-2001", "P2")
+    _tier(store, "CVE-2099-2005", "P1", ["cvss"])
+    _tier(store, "CVE-2099-2006", "P2")
+
+    rep = build_report(store, NOW, days=1)
+    assert rep.triage_rows == 6
+    assert rep.triage_candidates == 3
+    assert rep.triage_by_stack == {
+        "nodejs_core": (0, 0),
+        "npm_package": (2, 1),
+        "linux_kernel": (1, 0),
+        "linux_distro_package": (0, 0),
+    }
+    assert rep.triage_missed == 1
+
+    lines = format_report(rep).splitlines()
+    assert "triage rows: 6" in lines
+    assert "triage candidates (window): 3" in lines
+    rows = [line.split() for line in lines]
+    assert ["npm_package", "2", "1"] in rows
+    assert ["linux_distro_package", "0", "0"] in rows
+    assert "triage missed (tier but not candidate, window): 1" in lines
+
+
+def test_report_triage_rows_empty(store):
+    lines = format_report(build_report(store, NOW, days=1)).splitlines()
+    assert "triage rows: 0" in lines
+    assert "triage candidates (window): 0" in lines
