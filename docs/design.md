@@ -170,11 +170,12 @@ P3 の kernel CVE は **週次「kernel CVE 件数」1 本**にまとめる（�
 - tier が上がった続報は記事を先頭に戻し、配信チャネルにも流す。下がった続報は記事に追記するだけ（配信しない）。
 - 1 CVE = 1 記事。続報は記事内の時系列と、記事冒頭の「最新の状況」に反映する。
 
-**前段の仕分け（Jev、shadow）**: ルールで対象スタックが決まらない CVE（CPE 無し・GHSA 無し・kernel CNA でない）だけ、NVD の英語説明文を TypeSafe の Jev に渡し、種別（`kind`）と対象スタックとの関係（`stack`: `nodejs_core` / `npm_package` / `linux_kernel` / `linux_distro_package` / `none`）を**固定選択肢**で答えさせて `llm_triage` に記録する。自由記述はさせない。tier は変えず、`stack` が `none` 以外で confidence が閾値（既定 0.6）以上のものに**候補**（`triage_candidate`）として印を付けるだけ。精度は後からルールでも対象スタックになった件数（tier 行との突き合わせ）で確かめる。
-
 - プロバイダ: **Gemini**（決定）。① ③ と P2 の ② は `gemini-3.1-flash-lite` 相当、P0/P1 の ② は `gemini-3.8-flash` 相当（signal-digest の実測で原文の重要語保持が 96%。flash-lite は 67%）。モデル名は設定値。思考トークンは signal-digest と同じく既定 0。
 - 無料枠は 3.8-flash が 20 req/日（signal-digest の実測）で足りないため、**課金（prepay）を有効にしたキー**を前提にする。
 - signal-digest の BYOK・マルチプロバイダは不要。1 プロバイダ + フォールバック（Gemini Flash 相当）で十分。
+
+#### 4.6.1 前段の仕分け（Jev）
+ルールで対象スタックが決まらない CVE（CPE 無し・GHSA 無し・kernel CNA でない）だけ、NVD の英語説明文を TypeSafe の Jev に渡し、種別（`kind`）と対象スタックとの関係（`stack`: `nodejs_core` / `npm_package` / `linux_kernel` / `linux_distro_package` / `none`）を**固定選択肢**で答えさせて `llm_triage` に記録する。自由記述はさせない。tier は変えず、`stack` が `none` 以外で confidence が閾値（既定 0.6）以上のものに**候補**（`triage_candidate`）として印を付けるだけ。精度は後からルールでも対象スタックになった件数（tier 行との突き合わせ）で確かめる。
 
 ### 4.7 誤判定時の扱い
 - tier はルールの結果なので、誤りは **閾値かデータの誤り**。修正は設定変更 or ソース側の訂正取り込みで行い、その履歴を記事の時系列に残す（「2026-11-06 CVSS 9.8 → 7.5 に変更（NVD）」）。
