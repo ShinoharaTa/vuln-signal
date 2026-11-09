@@ -47,7 +47,8 @@ subject は CVE ID と、CVE の無い GHSA の GHSA ID。
   413 と応答の形の誤り（選択肢に無い答え・answers 欠け・JSON でない）は送り直しても直らないので、`error` 付きの行（kind / stack は `error`、candidate 0）を入れて
   `failed` と `permanent_failed` に数える。cursor は止めず、同じ説明文は次回から送らない。401 / 400 / 422 は全体を失敗にする（exit 1、`last_error` に残す）。
 - `TYPESAFE_API_KEY` が無ければ `triage skipped: TYPESAFE_API_KEY not set` を出して何もしない（exit 0）。`--dry-run` は API を呼ばず、キーが無くても対象件数と先頭 5 件の ID を出す。
-- `report` に `triage rows`、窓内の候補数と stack 別の内訳、候補のうち tier 行があるもの、tier 行があるのに候補でないもの（見逃し）を出す。
+- `report` に `triage rows`（error 行を除く）、窓内の候補数、stack（`nodejs_core` / `npm_package` / `linux_kernel` / `linux_distro_package`）ごとの候補数とそのうち tier 行があるもの、
+  tier 行があるのに候補でないもの（見逃し）を出す。`linux_distro_package` は対応するルールが無いので #8 まで比較不能。
 
 ```sh
 cd collector

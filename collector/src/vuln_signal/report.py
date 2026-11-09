@@ -14,6 +14,10 @@ from datetime import datetime, timedelta
 from vuln_signal.rules import TIERS
 from vuln_signal.sources.nvd import LINUX_KERNEL_CNA
 from vuln_signal.store import Store, iso
+from vuln_signal.triage import NO_STACK, QUESTIONS
+
+# 突き合わせを出す stack（none 以外）
+TRIAGE_STACKS = tuple(c for c in QUESTIONS["stack"].criteria if c != NO_STACK)
 
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 NO_SEVERITY = "(none)"
@@ -44,11 +48,13 @@ class Report:
     kernel_thinned: int = 0
     # llm_triage の総行数（送り直しても直らない失敗の error 行を除く）
     triage_rows: int = 0
-    # 窓内に問い合わせて candidate=1 のもの、と stack 別の内訳
+    # 窓内に問い合わせて candidate=1 のもの
     triage_candidates: int = 0
-    triage_stacks: dict[str, int] = field(default_factory=dict)
-    # 窓内の candidate=1 のうち tier 行があるもの（後からルールでも対象スタックになった）
-    triage_with_tier: int = 0
+    # stack -> (窓内の candidate=1 の件数, そのうち tier 行があるもの)。
+    # tier 行がある = 後からルールでも対象スタックになった
+    triage_by_stack: dict[str, tuple[int, int]] = field(
+        default_factory=lambda: dict.fromkeys(TRIAGE_STACKS, (0, 0))
+    )
     # 窓内に問い合わせて tier 行があるのに candidate=0 のもの（見逃し）
     triage_missed: int = 0
 
@@ -126,19 +132,14 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
     ).fetchone()[0]
 
     triage_window = "requested_at >= ? AND requested_at <= ?"
-    triage_stacks = {
-        row["stack"]: row["n"]
-        for row in conn.execute(
-            f"SELECT stack, COUNT(*) AS n FROM llm_triage WHERE candidate = 1 AND {triage_window} "
-            "GROUP BY stack ORDER BY stack",
-            window,
-        )
-    }
     with_tier = "EXISTS (SELECT 1 FROM tier WHERE tier.subject_id = llm_triage.subject_id)"
-    triage_with_tier = conn.execute(
-        f"SELECT COUNT(*) FROM llm_triage WHERE candidate = 1 AND {triage_window} AND {with_tier}",
+    triage_by_stack = dict.fromkeys(TRIAGE_STACKS, (0, 0))
+    for row in conn.execute(
+        f"SELECT stack, COUNT(*) AS n, SUM({with_tier}) AS t FROM llm_triage "
+        f"WHERE candidate = 1 AND {triage_window} GROUP BY stack",
         window,
-    ).fetchone()[0]
+    ):
+        triage_by_stack[row["stack"]] = (row["n"], row["t"])
     triage_missed = conn.execute(
         "SELECT COUNT(*) FROM llm_triage WHERE candidate = 0 AND error IS NULL "
         f"AND {triage_window} AND {with_tier}",
@@ -166,9 +167,8 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         triage_rows=conn.execute("SELECT COUNT(*) FROM llm_triage WHERE error IS NULL").fetchone()[
             0
         ],
-        triage_candidates=sum(triage_stacks.values()),
-        triage_stacks=triage_stacks,
-        triage_with_tier=triage_with_tier,
+        triage_candidates=sum(n for n, _ in triage_by_stack.values()),
+        triage_by_stack=triage_by_stack,
         triage_missed=triage_missed,
     )
 
@@ -214,10 +214,9 @@ def format_report(rep: Report) -> str:
         f"triage rows: {rep.triage_rows}",
         f"triage candidates (window): {rep.triage_candidates}",
         _table(
-            ("triage candidate stack", "count"),
-            list(rep.triage_stacks.items()) or [("(none)", 0)],
+            ("triage stack (window)", "candidates", "with tier"),
+            [(stack, n, t) for stack, (n, t) in rep.triage_by_stack.items()],
         ),
-        f"triage candidates with tier (window): {rep.triage_with_tier}",
         f"triage missed (tier but not candidate, window): {rep.triage_missed}",
         "",
         _table(

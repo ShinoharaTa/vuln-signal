@@ -197,15 +197,20 @@ def test_report_triage_rows(store):
     rep = build_report(store, NOW, days=1)
     assert rep.triage_rows == 6
     assert rep.triage_candidates == 3
-    assert rep.triage_stacks == {"linux_kernel": 1, "npm_package": 2}
-    assert rep.triage_with_tier == 1
+    assert rep.triage_by_stack == {
+        "nodejs_core": (0, 0),
+        "npm_package": (2, 1),
+        "linux_kernel": (1, 0),
+        "linux_distro_package": (0, 0),
+    }
     assert rep.triage_missed == 1
 
     lines = format_report(rep).splitlines()
     assert "triage rows: 6" in lines
     assert "triage candidates (window): 3" in lines
-    assert ["npm_package", "2"] in [line.split() for line in lines]
-    assert "triage candidates with tier (window): 1" in lines
+    rows = [line.split() for line in lines]
+    assert ["npm_package", "2", "1"] in rows
+    assert ["linux_distro_package", "0", "0"] in rows
     assert "triage missed (tier but not candidate, window): 1" in lines
 
 
