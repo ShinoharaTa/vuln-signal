@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 
 from vuln_signal import config
-from vuln_signal.config import Config
+from vuln_signal.config import Config, RulesError
 from vuln_signal.report import build_report, format_report
 from vuln_signal.rules import TIERS
 from vuln_signal.sources.epss import EpssClient
@@ -18,7 +18,7 @@ from vuln_signal.sources.ghsa import GhsaClient
 from vuln_signal.sources.kev import KevClient
 from vuln_signal.sources.nvd import NvdClient
 from vuln_signal.store import Store, db_path, iso, parse_iso
-from vuln_signal.sync import classify, sync_epss, sync_ghsa, sync_kev, sync_nvd
+from vuln_signal.sync import SOURCE_CLASSIFY, classify, sync_epss, sync_ghsa, sync_kev, sync_nvd
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 sync_app = typer.Typer(no_args_is_help=True, help="一次ソースから取得して作業 DB に反映する。")
@@ -184,10 +184,31 @@ def _run_ghsa(cfg: Config, since: datetime | None, dry_run: bool) -> bool:
     return True
 
 
+def _record_classify_error(cfg: Config, text: str) -> None:
+    """classify の外（ルール読み込み）で失敗したときも sync_state に残す。開けなければ諦める。"""
+    try:
+        store = Store.open(cfg.data_dir)
+    except Exception:
+        return
+    try:
+        store.mark_sync_error(SOURCE_CLASSIFY, iso(_now()), text)
+    except Exception:
+        pass
+    finally:
+        store.close()
+
+
 def _run_classify(cfg: Config, all_subjects: bool, dry_run: bool) -> bool:
     try:
+        rules = config.load_rules(cfg.rules_file, required=cfg.rules_file_required)
+    except RulesError as e:
+        text = f"{type(e).__name__}: {e}"
+        if not dry_run:
+            _record_classify_error(cfg, text)
+        typer.echo(f"classify failed: {text}", err=True)
+        return False
+    try:
         with ExitStack() as stack:
-            rules = config.load_rules(cfg.rules_file, required=cfg.rules_file_required)
             store = Store.open(cfg.data_dir)
             stack.callback(store.close)
             result = classify(store, rules, _now(), all_subjects=all_subjects, dry_run=dry_run)

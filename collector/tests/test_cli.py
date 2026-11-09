@@ -305,6 +305,24 @@ def test_classify_bad_rules_file_exit_1(tmp_path, monkeypatch):
     res = CliRunner().invoke(cli.app, ["classify"])
     assert res.exit_code == 1
     assert "classify failed: RulesError: unknown key in thresholds: unknown" in res.output
+    s = Store.open(tmp_path / "data")
+    try:
+        state = s.get_sync_state("classify")
+        assert state["last_error"] == "RulesError: unknown key in thresholds: unknown"
+        assert state["last_ok_at"] is None
+    finally:
+        s.close()
+
+    # dry-run では書かない
+    rules.write_text("[thresholds]\nother = 1\n", encoding="utf-8")
+    res = CliRunner().invoke(cli.app, ["classify", "--dry-run"])
+    assert res.exit_code == 1
+    s = Store.open(tmp_path / "data")
+    try:
+        assert "unknown" in s.get_sync_state("classify")["last_error"]
+        assert "other" not in s.get_sync_state("classify")["last_error"]
+    finally:
+        s.close()
 
 
 def test_classify_explicit_rules_file_missing_exit_1(tmp_path, monkeypatch):
