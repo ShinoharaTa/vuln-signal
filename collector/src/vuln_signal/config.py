@@ -20,6 +20,10 @@ DEFAULT_RULES_FILE = "~/.config/vuln-signal/rules.toml"
 DEFAULT_DATA_DIR = "~/.local/share/vuln-signal"
 DEFAULT_INITIAL_LOOKBACK_HOURS = 24
 DEFAULT_EPSS_WINDOW_DAYS = 30
+DEFAULT_JEV_MODEL = "jev-latest"
+DEFAULT_JEV_MIN_CONFIDENCE = 0.6
+DEFAULT_JEV_MAX_PER_RUN = 500
+DEFAULT_JEV_MAX_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,12 @@ class Config:
     rules_file: Path = field(default_factory=lambda: Path(DEFAULT_RULES_FILE).expanduser())
     # VULN_SIGNAL_RULES_FILE で明示した（無ければエラーにする）
     rules_file_required: bool = False
+    # Jev（TypeSafe）による前段の仕分け。キーが無ければ triage はスキップ
+    typesafe_api_key: str = field(default="", repr=False)
+    jev_model: str = DEFAULT_JEV_MODEL
+    jev_min_confidence: float = DEFAULT_JEV_MIN_CONFIDENCE
+    jev_max_per_run: int = DEFAULT_JEV_MAX_PER_RUN
+    jev_max_chars: int = DEFAULT_JEV_MAX_CHARS
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -71,6 +81,10 @@ def from_mapping(env: Mapping[str, str]) -> Config:
         value = env.get(key) or ""
         return int(value) if value else default
 
+    def _float(key: str, default: float) -> float:
+        value = env.get(key) or ""
+        return float(value) if value else default
+
     return Config(
         nvd_api_key=env.get("NVD_API_KEY", ""),
         data_dir=data_dir,
@@ -84,6 +98,11 @@ def from_mapping(env: Mapping[str, str]) -> Config:
         epss_window_days=_int("EPSS_WINDOW_DAYS", DEFAULT_EPSS_WINDOW_DAYS),
         rules_file=Path(env.get("VULN_SIGNAL_RULES_FILE") or DEFAULT_RULES_FILE).expanduser(),
         rules_file_required=bool(env.get("VULN_SIGNAL_RULES_FILE")),
+        typesafe_api_key=env.get("TYPESAFE_API_KEY", ""),
+        jev_model=env.get("JEV_MODEL") or DEFAULT_JEV_MODEL,
+        jev_min_confidence=_float("JEV_MIN_CONFIDENCE", DEFAULT_JEV_MIN_CONFIDENCE),
+        jev_max_per_run=_int("JEV_MAX_PER_RUN", DEFAULT_JEV_MAX_PER_RUN),
+        jev_max_chars=_int("JEV_MAX_CHARS", DEFAULT_JEV_MAX_CHARS),
     )
 
 
