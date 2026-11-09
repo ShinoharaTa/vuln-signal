@@ -29,6 +29,10 @@ class JevFatalError(JevError):
     """続けても失敗する（401 / 400 / 422）。"""
 
 
+class JevPermanentError(JevError):
+    """その state では送り直しても直らない（413・応答の形が違う）。"""
+
+
 @dataclass(frozen=True)
 class Question:
     instructions: str
@@ -62,25 +66,25 @@ def build_body(model: str, state: str, questions: Mapping[str, Question]) -> dic
 
 
 def parse_response(data: Any, questions: Mapping[str, Question], default_model: str) -> JevResponse:
-    """応答を JevResponse にする。質問が欠けている・選択肢に無い答えは JevError。"""
+    """応答を JevResponse にする。質問が欠けている・選択肢に無い答えは JevPermanentError。"""
     if not isinstance(data, dict):
-        raise JevError("response is not an object")
+        raise JevPermanentError("response is not an object")
     raw_answers = data.get("answers")
     if not isinstance(raw_answers, dict):
-        raise JevError("response has no answers")
+        raise JevPermanentError("response has no answers")
     answers: dict[str, ChoiceAnswer] = {}
     for name, q in questions.items():
         ans = raw_answers.get(name)
         if not isinstance(ans, dict):
-            raise JevError(f"answer {name} is missing")
+            raise JevPermanentError(f"answer {name} is missing")
         choice = ans.get("choice")
         if choice not in q.criteria:
-            raise JevError(f"answer {name} has unknown choice: {choice!r}")
+            raise JevPermanentError(f"answer {name} has unknown choice: {choice!r}")
         try:
             confidence = float(ans["confidence"])
             probs = {str(k): float(v) for k, v in (ans.get("probabilities") or {}).items()}
         except (KeyError, TypeError, ValueError) as e:
-            raise JevError(f"answer {name} is malformed: {type(e).__name__}") from e
+            raise JevPermanentError(f"answer {name} is malformed: {type(e).__name__}") from e
         answers[name] = ChoiceAnswer(choice, confidence, probs)
     usage = data.get("usage") or {}
     tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
@@ -145,9 +149,14 @@ class JevClient(RetryingClient):
 
     def ask(self, model: str, state: str, questions: Mapping[str, Question]) -> JevResponse:
         """1 つの state に複数の質問をまとめて 1 リクエストで聞く。"""
-        resp = self._post(self._base_url, json=build_body(model, state, questions))
+        # 413 は再試行しても同じなので、受け取ってから JevPermanentError にする
+        resp = self._post(
+            self._base_url, json=build_body(model, state, questions), ok_status=(200, 413)
+        )
+        if resp.status_code == 413:
+            raise JevPermanentError("HTTP 413")
         try:
             data = resp.json()
         except ValueError as e:
-            raise JevError(f"response is not JSON: {type(e).__name__}") from e
+            raise JevPermanentError(f"response is not JSON: {type(e).__name__}") from e
         return parse_response(data, questions, model)

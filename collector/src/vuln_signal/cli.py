@@ -269,6 +269,7 @@ def _run_triage(cfg: Config, limit: int | None, dry_run: bool) -> bool:
         return True
     typer.echo(f"requested: {result.requested}")
     typer.echo(f"failed: {result.failed}")
+    typer.echo(f"permanent_failed: {result.permanent_failed}")
     typer.echo(f"candidates: {result.candidates}")
     for kind, n in sorted(result.kinds.items()):
         typer.echo(f"kind {kind}: {n}")

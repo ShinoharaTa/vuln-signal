@@ -10,6 +10,7 @@ from vuln_signal.sources.jev import (
     JevClient,
     JevError,
     JevFatalError,
+    JevPermanentError,
     Question,
     parse_response,
 )
@@ -115,11 +116,10 @@ def test_config_errors_are_fatal_without_retry(fake_sleep, status):
 
 
 @respx.mock
-def test_413_fails_one_request_only(fake_sleep):
+def test_413_is_permanent_without_retry(fake_sleep):
     respx.post(BASE_URL).mock(return_value=httpx.Response(413))
-    with pytest.raises(JevError) as exc:
+    with pytest.raises(JevPermanentError, match="HTTP 413"):
         _client(fake_sleep).ask("m", "s", QUESTIONS)
-    assert not isinstance(exc.value, JevFatalError)
     assert fake_sleep.calls == []
 
 
@@ -138,7 +138,7 @@ def test_key_not_in_errors_or_repr(fake_sleep, caplog):
 
 
 def test_parse_response_rejects_unknown_choice_and_missing():
-    with pytest.raises(JevError, match="unknown choice"):
+    with pytest.raises(JevPermanentError, match="unknown choice"):
         parse_response(_answer(stack="nodejs_core"), QUESTIONS, "m")
     data = _answer()
     del data["answers"]["kind"]

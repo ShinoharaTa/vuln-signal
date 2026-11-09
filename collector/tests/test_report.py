@@ -158,7 +158,7 @@ def test_report_tier_rows_empty(store):
     assert "P0+P1 new per day: 0.0" in lines
 
 
-def _triage(store, subject, stack, candidate, at=IN_WINDOW):
+def _triage(store, subject, stack, candidate, at=IN_WINDOW, error=None):
     store.upsert_llm_triage(
         {
             "subject_id": subject,
@@ -174,6 +174,7 @@ def _triage(store, subject, stack, candidate, at=IN_WINDOW):
             "input_tokens": 1,
             "description_hash": "h",
             "requested_at": at,
+            "error": error,
         }
     )
 
@@ -186,6 +187,9 @@ def test_report_triage_rows(store):
     _triage(store, "CVE-2099-2005", "npm_package", 0)
     # 窓の外: 総行数だけに数える
     _triage(store, "CVE-2099-2006", "npm_package", 1, at=OLD)
+    # 送り直しても直らない失敗の行: どこにも数えない
+    _triage(store, "CVE-2099-2007", "error", 0, error="JevPermanentError: HTTP 413")
+    _tier(store, "CVE-2099-2007", "P2")
     _tier(store, "CVE-2099-2001", "P2")
     _tier(store, "CVE-2099-2005", "P1", ["cvss"])
     _tier(store, "CVE-2099-2006", "P2")

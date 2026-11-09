@@ -150,7 +150,9 @@ MIGRATIONS: list[str] = [
         candidate INTEGER NOT NULL,      -- 1 = stack != 'none' かつ stack_confidence >= 閾値
         input_tokens INTEGER,
         description_hash TEXT NOT NULL,  -- sha256(description_en) 先頭 16 桁
-        requested_at TEXT NOT NULL
+        requested_at TEXT NOT NULL,
+        error TEXT                       -- 送り直しても直らない失敗（413・応答の形）。
+                                         --   kind / stack は 'error'、candidate 0
     );
     CREATE INDEX llm_triage_candidate ON llm_triage (candidate);
     """,

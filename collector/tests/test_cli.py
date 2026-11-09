@@ -412,6 +412,7 @@ def test_triage_with_limit(tmp_path, monkeypatch):
         "limit: 2",
         "requested: 2",
         "failed: 0",
+        "permanent_failed: 0",
         "candidates: 2",
         "kind library: 2",
         "stack npm_package: 2",

@@ -309,3 +309,62 @@ def test_partial_failure_last_error_hides_key(store, fake_sleep):
     assert state["last_error"] == (
         "triage: 1/2 requests failed; last: JevError: ConnectError: refused *** (after 3 retries)"
     )
+
+
+@respx.mock
+def test_permanent_failures_are_recorded_and_not_resent(store, fake_sleep):
+    _put(store, "CVE-2099-0001", desc="big")
+    _put(store, "CVE-2099-0002", desc="odd")
+    _put(store, "CVE-2099-0003", desc="good")
+    route = respx.post(BASE_URL).mock(
+        side_effect=_by_state(
+            {
+                "big": httpx.Response(413),
+                "odd": _ok(stack="nodejs"),
+                "good": _ok(),
+            }
+        )
+    )
+    res = _run(store, fake_sleep)
+    assert (res.requested, res.failed, res.permanent_failed) == (3, 2, 2)
+    assert fake_sleep.calls == []
+    row = store.get_llm_triage("CVE-2099-0001")
+    assert row["error"] == "JevPermanentError: HTTP 413"
+    assert (row["kind"], row["stack"], row["candidate"]) == ("error", "error", 0)
+    assert (row["kind_confidence"], row["stack_confidence"]) == (0.0, 0.0)
+    assert row["description_hash"] == description_hash("big")
+    assert row["model"] == "jev-latest"
+    assert "unknown choice" in store.get_llm_triage("CVE-2099-0002")["error"]
+    assert store.get_llm_triage("CVE-2099-0003")["error"] is None
+    # 送り直しても直らない失敗だけなら cursor は進める
+    state = store.get_sync_state("triage")
+    assert state["cursor"] == str(res.cursor) and res.cursor is not None
+    assert state["last_error"] is None
+
+    # 説明文が変わらなければ次回は送らない
+    _put(store, "CVE-2099-0001", desc="big", kind="cpe_changed")
+    res = _run(store, fake_sleep, now=NOW2)
+    assert (res.targets, res.requested) == (0, 0)
+    assert route.call_count == 3
+
+
+@respx.mock
+def test_permanent_failure_clears_candidate(store, fake_sleep):
+    _put(store, "CVE-2099-0001", desc="v1")
+    respx.post(BASE_URL).mock(
+        side_effect=_by_state({"v1": _ok(), "v2": httpx.Response(200, text="not json")})
+    )
+    _run(store, fake_sleep)
+    _put(store, "CVE-2099-0001", desc="v2", kind="source_changed")
+    res = _run(store, fake_sleep, now=NOW2)
+    assert res.permanent_failed == 1
+    assert store.get_llm_triage("CVE-2099-0001")["error"].startswith(
+        "JevPermanentError: response is not JSON"
+    )
+    assert _events(store)[-1] == (
+        "CVE-2099-0001",
+        "triage_candidate_cleared",
+        "npm_package",
+        None,
+        "jev",
+    )

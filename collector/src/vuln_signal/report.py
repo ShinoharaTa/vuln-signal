@@ -42,7 +42,7 @@ class Report:
     tier_upgrades: int = 0
     # 窓内に初出した subject で kernel_thinned で P3 になったもの
     kernel_thinned: int = 0
-    # llm_triage の総行数
+    # llm_triage の総行数（送り直しても直らない失敗の error 行を除く）
     triage_rows: int = 0
     # 窓内に問い合わせて candidate=1 のもの、と stack 別の内訳
     triage_candidates: int = 0
@@ -140,7 +140,8 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         window,
     ).fetchone()[0]
     triage_missed = conn.execute(
-        f"SELECT COUNT(*) FROM llm_triage WHERE candidate = 0 AND {triage_window} AND {with_tier}",
+        "SELECT COUNT(*) FROM llm_triage WHERE candidate = 0 AND error IS NULL "
+        f"AND {triage_window} AND {with_tier}",
         window,
     ).fetchone()[0]
 
@@ -162,7 +163,9 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         tier_new=tier_new,
         tier_upgrades=tier_upgrades,
         kernel_thinned=kernel_thinned,
-        triage_rows=store.count_rows("llm_triage"),
+        triage_rows=conn.execute("SELECT COUNT(*) FROM llm_triage WHERE error IS NULL").fetchone()[
+            0
+        ],
         triage_candidates=sum(triage_stacks.values()),
         triage_stacks=triage_stacks,
         triage_with_tier=triage_with_tier,
