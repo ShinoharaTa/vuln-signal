@@ -46,6 +46,10 @@ class Config:
     jev_max_chars: int = DEFAULT_JEV_MAX_CHARS
 
 
+class ConfigError(ValueError):
+    """環境変数の値が不正。"""
+
+
 def parse_env_file(text: str) -> dict[str, str]:
     """KEY=VALUE 行を読む。# 行と空行は無視し、値の前後の空白とクォートを外す。"""
     values: dict[str, str] = {}
@@ -85,6 +89,12 @@ def from_mapping(env: Mapping[str, str]) -> Config:
         value = env.get(key) or ""
         return float(value) if value else default
 
+    def _positive_int(key: str, default: int) -> int:
+        value = _int(key, default)
+        if value < 1:
+            raise ConfigError(f"{key} must be 1 or more: {value}")
+        return value
+
     return Config(
         nvd_api_key=env.get("NVD_API_KEY", ""),
         data_dir=data_dir,
@@ -101,8 +111,8 @@ def from_mapping(env: Mapping[str, str]) -> Config:
         typesafe_api_key=env.get("TYPESAFE_API_KEY", ""),
         jev_model=env.get("JEV_MODEL") or DEFAULT_JEV_MODEL,
         jev_min_confidence=_float("JEV_MIN_CONFIDENCE", DEFAULT_JEV_MIN_CONFIDENCE),
-        jev_max_per_run=_int("JEV_MAX_PER_RUN", DEFAULT_JEV_MAX_PER_RUN),
-        jev_max_chars=_int("JEV_MAX_CHARS", DEFAULT_JEV_MAX_CHARS),
+        jev_max_per_run=_positive_int("JEV_MAX_PER_RUN", DEFAULT_JEV_MAX_PER_RUN),
+        jev_max_chars=_positive_int("JEV_MAX_CHARS", DEFAULT_JEV_MAX_CHARS),
     )
 
 

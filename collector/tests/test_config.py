@@ -96,6 +96,12 @@ def test_jev_settings_from_env(tmp_path):
     assert (cfg.jev_max_per_run, cfg.jev_max_chars) == (20, 1000)
 
 
+@pytest.mark.parametrize(("key", "value"), [("JEV_MAX_PER_RUN", "0"), ("JEV_MAX_CHARS", "-1")])
+def test_jev_limits_must_be_positive(tmp_path, key, value):
+    with pytest.raises(config.ConfigError, match=f"{key} must be 1 or more"):
+        config.load({"VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"), key: value})
+
+
 def test_rules_file_from_env(tmp_path):
     cfg = config.load(
         {
