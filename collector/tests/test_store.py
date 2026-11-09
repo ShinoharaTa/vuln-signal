@@ -10,7 +10,7 @@ def test_new_db_permissions_and_version(tmp_path):
     try:
         assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(s.path.stat().st_mode) == 0o600
-        assert s.user_version() == SCHEMA_VERSION == 2
+        assert s.user_version() == SCHEMA_VERSION == 3
         assert s.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert s.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
@@ -24,12 +24,12 @@ def test_reopen_keeps_data(tmp_path):
 
     s = Store.open(tmp_path)
     try:
-        assert s.user_version() == SCHEMA_VERSION == 2
+        assert s.user_version() == SCHEMA_VERSION == 3
         assert s.get_sync_state("nvd")["cursor"] == "2099-01-01T00:00:00Z"
         tables = {
             r[0] for r in s.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        assert {"sync_state", "cve", "cve_event", "kev", "epss", "ghsa"} <= tables
+        assert {"sync_state", "cve", "cve_event", "kev", "epss", "ghsa", "tier"} <= tables
     finally:
         s.close()
 
@@ -56,7 +56,7 @@ def test_migrate_v1_to_v2_keeps_events_and_drops_fk(tmp_path):
     rows = _make_v1_db(tmp_path / "data")
     s = Store.open(tmp_path / "data")
     try:
-        assert s.user_version() == 2
+        assert s.user_version() == SCHEMA_VERSION
         assert [tuple(r) for r in s.conn.execute("SELECT * FROM cve_event ORDER BY id")] == rows
         assert s.conn.execute("PRAGMA foreign_key_list(cve_event)").fetchall() == []
         indexes = {r["name"] for r in s.conn.execute("PRAGMA index_list(cve_event)")}
@@ -84,3 +84,51 @@ def test_mark_sync_ok_with_cursor_and_etag(store):
     assert state["etag"] == '"abc"'
     store.set_sync_etag("kev", None)
     assert store.get_sync_state("kev")["etag"] is None
+
+
+def _make_v2_db(data_dir):
+    data_dir.mkdir(parents=True)
+    conn = sqlite3.connect(data_dir / DB_FILENAME, autocommit=True)
+    for migration in MIGRATIONS[:2]:
+        for stmt in migration.split(";"):
+            if stmt.strip():
+                conn.execute(stmt)
+    conn.execute("PRAGMA user_version = 2")
+    conn.execute("INSERT INTO cve (id) VALUES ('CVE-2099-0001')")
+    conn.execute("INSERT INTO kev (cve_id) VALUES ('CVE-2099-0002')")
+    conn.execute(
+        "INSERT INTO cve_event (cve_id, observed_at, kind, source) "
+        "VALUES ('CVE-2099-0001', '2099-01-01T00:00:00Z', 'first_seen', 'nvd')"
+    )
+    conn.close()
+
+
+def test_migrate_v2_to_v3_adds_tier(tmp_path):
+    _make_v2_db(tmp_path / "data")
+    s = Store.open(tmp_path / "data")
+    try:
+        assert s.user_version() == 3
+        assert s.count_rows("cve") == s.count_rows("kev") == s.count_rows("cve_event") == 1
+        assert s.count_rows("tier") == 0
+        indexes = {r["name"] for r in s.conn.execute("PRAGMA index_list(tier)")}
+        assert "tier_tier" in indexes
+    finally:
+        s.close()
+
+
+def test_upsert_and_delete_tier(store):
+    store.upsert_tier(
+        "CVE-2099-0001", "P1", ["npm", "linux_kernel"], ["cvss"], {"cvss": 7.5}, "v1", "t1"
+    )
+    row = store.get_tier("CVE-2099-0001")
+    assert (row["tier"], row["stacks"], row["reasons"]) == (
+        "P1",
+        '["linux_kernel", "npm"]',
+        '["cvss"]',
+    )
+    store.upsert_tier("CVE-2099-0001", "P0", ["npm"], ["kev"], {"kev": True}, "v2", "t2")
+    row = store.get_tier("CVE-2099-0001")
+    assert (row["tier"], row["rules_version"], row["computed_at"]) == ("P0", "v2", "t2")
+    assert store.count_rows("tier") == 1
+    store.delete_tier("CVE-2099-0001")
+    assert store.get_tier("CVE-2099-0001") is None

@@ -121,6 +121,20 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX ghsa_cve ON ghsa (cve_id);
     """,
+    # v3: ルールによる tier 判定（shadow）。subject は CVE ID か、CVE の無い GHSA の GHSA ID
+    """
+    CREATE TABLE tier (
+        subject_id TEXT PRIMARY KEY,
+        tier TEXT NOT NULL,         -- P0 / P1 / P2 / P3
+        stacks TEXT NOT NULL,       -- JSON 配列（ソート済み）
+        reasons TEXT NOT NULL,      -- JSON 配列（判定順）
+        inputs TEXT NOT NULL,       -- JSON: 判定に使った値（cvss, epss, percentile, kev,
+                                    --   vuln_status, ghsa_severity）
+        rules_version TEXT NOT NULL,
+        computed_at TEXT NOT NULL
+    );
+    CREATE INDEX tier_tier ON tier (tier);
+    """,
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -373,3 +387,34 @@ class Store:
             f"ON CONFLICT ({key}) DO UPDATE SET {updates}",
             row,
         )
+
+    # --- tier ---
+
+    def get_tier(self, subject_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM tier WHERE subject_id = ?", (subject_id,)
+        ).fetchone()
+
+    def upsert_tier(
+        self,
+        subject_id: str,
+        tier: str,
+        stacks: list[str],
+        reasons: list[str],
+        inputs: dict[str, Any],
+        rules_version: str,
+        computed_at: str,
+    ) -> None:
+        row: dict[str, Any] = {
+            "subject_id": subject_id,
+            "tier": tier,
+            "stacks": json.dumps(sorted(stacks)),
+            "reasons": json.dumps(reasons),
+            "inputs": json.dumps(inputs, sort_keys=True),
+            "rules_version": rules_version,
+            "computed_at": computed_at,
+        }
+        self._upsert("tier", "subject_id", row)
+
+    def delete_tier(self, subject_id: str) -> None:
+        self.conn.execute("DELETE FROM tier WHERE subject_id = ?", (subject_id,))
