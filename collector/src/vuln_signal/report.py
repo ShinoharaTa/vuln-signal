@@ -2,13 +2,15 @@
 
 「新規公開」は cve.published が窓内の CVE、「初出」は作業 DB に初めて入った CVE
 （cve_event の kind='first_seen'）。lastModified で取るので初出には古い CVE も混じる。
+tier の「窓内の新規」は first_seen / ghsa_first_seen が窓内の subject の現在の tier。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from vuln_signal.rules import TIERS
 from vuln_signal.sources.nvd import LINUX_KERNEL_CNA
 from vuln_signal.store import Store, iso
 
@@ -30,6 +32,19 @@ class Report:
     kev_total: int = 0
     epss_rows: int = 0
     ghsa_rows: int = 0
+    days: int = 1
+    # tier テーブル全体の件数
+    tier_current: dict[str, int] = field(default_factory=lambda: dict.fromkeys(TIERS, 0))
+    # 窓内に初出した subject の現在の tier
+    tier_new: dict[str, int] = field(default_factory=lambda: dict.fromkeys(TIERS, 0))
+    # 窓内の tier_changed のうち上がったもの（NULL → P0 / P1 を含む）
+    tier_upgrades: int = 0
+    # 窓内に初出した subject で kernel_thinned で P3 になったもの
+    kernel_thinned: int = 0
+
+    @property
+    def p0_p1_new_per_day(self) -> float:
+        return (self.tier_new["P0"] + self.tier_new["P1"]) / self.days
 
 
 def build_report(store: Store, now: datetime, days: int = 1) -> Report:
@@ -70,6 +85,36 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         (*window, LINUX_KERNEL_CNA),
     ).fetchone()[0]
 
+    tier_current = dict.fromkeys(TIERS, 0)
+    for row in conn.execute("SELECT tier, COUNT(*) AS n FROM tier GROUP BY tier"):
+        tier_current[row["tier"]] = row["n"]
+
+    new_subjects = (
+        "SELECT cve_id FROM cve_event WHERE kind IN ('first_seen', 'ghsa_first_seen') "
+        "AND observed_at >= ? AND observed_at <= ?"
+    )
+    tier_new = dict.fromkeys(TIERS, 0)
+    for row in conn.execute(
+        f"SELECT tier, COUNT(*) AS n FROM tier WHERE subject_id IN ({new_subjects}) GROUP BY tier",
+        window,
+    ):
+        tier_new[row["tier"]] = row["n"]
+
+    # P0 < P1 < ... の順なので文字列比較で上がったかが分かる
+    tier_upgrades = conn.execute(
+        "SELECT COUNT(*) FROM cve_event WHERE kind = 'tier_changed' "
+        "AND observed_at >= ? AND observed_at <= ? AND ("
+        "(before IS NULL AND after IN ('P0', 'P1')) "
+        "OR (before IS NOT NULL AND after IS NOT NULL AND after < before))",
+        window,
+    ).fetchone()[0]
+
+    kernel_thinned = conn.execute(
+        f"SELECT COUNT(*) FROM tier WHERE subject_id IN ({new_subjects}) "
+        "AND EXISTS (SELECT 1 FROM json_each(tier.reasons) WHERE value = 'kernel_thinned')",
+        window,
+    ).fetchone()[0]
+
     state = [(r["source"], r["last_ok_at"], r["last_error"]) for r in store.list_sync_state()]
     return Report(
         since,
@@ -83,6 +128,11 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
         kev_total=store.count_rows("kev"),
         epss_rows=store.count_rows("epss"),
         ghsa_rows=store.count_rows("ghsa"),
+        days=days,
+        tier_current=tier_current,
+        tier_new=tier_new,
+        tier_upgrades=tier_upgrades,
+        kernel_thinned=kernel_thinned,
     )
 
 
@@ -114,6 +164,15 @@ def format_report(rep: Report) -> str:
         f"kev total: {rep.kev_total}",
         f"epss rows: {rep.epss_rows}",
         f"ghsa rows: {rep.ghsa_rows}",
+        "",
+        _table(
+            ("tier", "current", "new in window"),
+            [(t, rep.tier_current[t], rep.tier_new[t]) for t in TIERS],
+        ),
+        "",
+        f"P0+P1 new per day: {rep.p0_p1_new_per_day:.1f}",
+        f"tier upgrades in window: {rep.tier_upgrades}",
+        f"kernel thinned (P3) in window: {rep.kernel_thinned}",
         "",
         _table(
             ("source", "last_ok_at", "last_error"), list(rep.sync_state) or [("(none)", None, None)]
