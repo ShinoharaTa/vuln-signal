@@ -26,6 +26,10 @@ class Report:
     new_by_severity: dict[str, int]
     new_kernel_cna: int
     sync_state: list[tuple[str, str | None, str | None]]  # (source, last_ok_at, last_error)
+    # テーブルの総行数（期間に関係しない）
+    kev_total: int = 0
+    epss_rows: int = 0
+    ghsa_rows: int = 0
 
 
 def build_report(store: Store, now: datetime, days: int = 1) -> Report:
@@ -67,7 +71,19 @@ def build_report(store: Store, now: datetime, days: int = 1) -> Report:
     ).fetchone()[0]
 
     state = [(r["source"], r["last_ok_at"], r["last_error"]) for r in store.list_sync_state()]
-    return Report(since, until, new_count, first_seen_count, events, by_severity, kernel, state)
+    return Report(
+        since,
+        until,
+        new_count,
+        first_seen_count,
+        events,
+        by_severity,
+        kernel,
+        state,
+        kev_total=store.count_rows("kev"),
+        epss_rows=store.count_rows("epss"),
+        ghsa_rows=store.count_rows("ghsa"),
+    )
 
 
 def _table(headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> str:
@@ -94,6 +110,10 @@ def format_report(rep: Report) -> str:
         _table(("new by CVSS v3.1 severity", "count"), list(rep.new_by_severity.items())),
         "",
         _table(("event kind", "count"), list(rep.events.items()) or [("(none)", 0)]),
+        "",
+        f"kev total: {rep.kev_total}",
+        f"epss rows: {rep.epss_rows}",
+        f"ghsa rows: {rep.ghsa_rows}",
         "",
         _table(
             ("source", "last_ok_at", "last_error"), list(rep.sync_state) or [("(none)", None, None)]

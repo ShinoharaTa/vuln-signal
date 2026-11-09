@@ -16,12 +16,18 @@ def test_reads_env_file_with_comments_quotes_and_blanks(tmp_path):
         "\n"
         "NVD_API_KEY = 'secret-key'  \n"
         'VULN_SIGNAL_DATA_DIR="/tmp/vs data"\n'
-        "NVD_INITIAL_LOOKBACK_HOURS=48\n",
+        "NVD_INITIAL_LOOKBACK_HOURS=48\n"
+        "GITHUB_TOKEN=gh-secret\n"
+        "GHSA_INITIAL_LOOKBACK_HOURS=12\n"
+        "EPSS_WINDOW_DAYS=7\n",
     )
     cfg = config.load({"VULN_SIGNAL_ENV_FILE": str(env_file)})
     assert cfg.nvd_api_key == "secret-key"
     assert cfg.data_dir == Path("/tmp/vs data")
     assert cfg.nvd_initial_lookback_hours == 48
+    assert cfg.github_token == "gh-secret"
+    assert cfg.ghsa_initial_lookback_hours == 12
+    assert cfg.epss_window_days == 7
 
 
 def test_existing_environment_wins(tmp_path):
@@ -36,6 +42,9 @@ def test_missing_env_file_uses_defaults(tmp_path):
     assert cfg.nvd_api_key == ""
     assert cfg.data_dir == Path("~/.local/share/vuln-signal").expanduser()
     assert cfg.nvd_initial_lookback_hours == 24
+    assert cfg.github_token == ""
+    assert cfg.ghsa_initial_lookback_hours == 24
+    assert cfg.epss_window_days == 30
 
 
 def test_load_does_not_modify_os_environ(tmp_path, monkeypatch):
@@ -49,5 +58,12 @@ def test_load_does_not_modify_os_environ(tmp_path, monkeypatch):
 
 
 def test_api_key_not_in_repr(tmp_path):
-    cfg = config.load({"VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"), "NVD_API_KEY": "s3cr3t"})
+    cfg = config.load(
+        {
+            "VULN_SIGNAL_ENV_FILE": str(tmp_path / "nope"),
+            "NVD_API_KEY": "s3cr3t",
+            "GITHUB_TOKEN": "t0k3n",
+        }
+    )
     assert "s3cr3t" not in repr(cfg)
+    assert "t0k3n" not in repr(cfg)

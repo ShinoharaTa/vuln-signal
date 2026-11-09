@@ -1,0 +1,66 @@
+[
+  {
+    "ghsa_id": "GHSA-2099-cccc-0003",
+    "cve_id": "CVE-2099-0003",
+    "url": "https://api.github.com/advisories/GHSA-2099-cccc-0003",
+    "html_url": "https://github.com/advisories/GHSA-2099-cccc-0003",
+    "repository_advisory_url": null,
+    "summary": "Fictional issue in example-d",
+    "description": "Fictional description.",
+    "type": "reviewed",
+    "severity": "low",
+    "source_code_location": "https://example.invalid/repo",
+    "identifiers": [
+      {
+        "value": "GHSA-2099-cccc-0003",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2099-0003",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://example.invalid/advisory"
+    ],
+    "published_at": "2099-01-01T10:00:00Z",
+    "updated_at": "2099-01-01T14:00:00Z",
+    "github_reviewed_at": "2099-01-01T10:00:00Z",
+    "nvd_published_at": null,
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "example-d"
+        },
+        "vulnerable_version_range": "< 1.0.1",
+        "first_patched_version": "1.0.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N",
+        "score": 3.1
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-79",
+        "name": "Cross-site Scripting"
+      }
+    ],
+    "credits": [],
+    "epss": [
+      {
+        "percentage": 0.001,
+        "percentile": 0.2
+      }
+    ]
+  }
+]
