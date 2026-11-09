@@ -1,4 +1,5 @@
 import pytest
+from conftest import make_cve, make_ghsa
 
 from vuln_signal.config import ExtraStack, Rules, parse_rules
 from vuln_signal.rules import (
@@ -10,9 +11,8 @@ from vuln_signal.rules import (
     representative_cvss,
 )
 from vuln_signal.sources.epss import EpssRecord
-from vuln_signal.sources.ghsa import GhsaRecord
 from vuln_signal.sources.kev import KevRecord
-from vuln_signal.sources.nvd import LINUX_KERNEL_CNA, CveRecord
+from vuln_signal.sources.nvd import LINUX_KERNEL_CNA
 
 RULES = Rules()
 NODE_CORE = "cpe:2.3:a:nodejs:node.js:20.0.0:*:*:*:*:*:*:*"
@@ -136,13 +136,13 @@ def test_deferred():
 
 
 def test_ghsa_only_subject(store):
-    store.upsert_ghsa(_ghsa("GHSA-aaaa-0001", None, "high", v3=None), "t")
+    store.upsert_ghsa(make_ghsa("GHSA-aaaa-0001", None, "high", v3=None), "t")
     assert _tier(collect_inputs(store, "GHSA-aaaa-0001")) == ("P1", ["ghsa_severity"])
 
 
 def test_withdrawn_ghsa_subject(store):
     store.upsert_ghsa(
-        _ghsa("GHSA-aaaa-0002", None, "critical", withdrawn="2099-01-01T00:00:00Z"), "t"
+        make_ghsa("GHSA-aaaa-0002", None, "critical", withdrawn="2099-01-01T00:00:00Z"), "t"
     )
     assert _tier(collect_inputs(store, "GHSA-aaaa-0002")) == ("P3", ["withdrawn"])
 
@@ -175,58 +175,19 @@ def test_representative_cvss():
     assert representative_cvss(None, []) is None
 
 
-def _cve(cve_id, **kw) -> CveRecord:
-    base = dict(
-        id=cve_id,
-        published=None,
-        last_modified=None,
-        vuln_status="Analyzed",
-        source_identifier="cna@example.invalid",
-        description_en=None,
-        cvss_v31_score=None,
-        cvss_v31_vector=None,
-        cvss_v31_severity=None,
-        cvss_v40_score=None,
-        cvss_v40_vector=None,
-        cvss_v40_severity=None,
-        cwe_ids=[],
-        cpe_criteria=[],
-        raw={},
-    )
-    base.update(kw)
-    return CveRecord(**base)
-
-
-def _ghsa(ghsa_id, cve_id, severity, *, v3=None, v4=None, withdrawn=None) -> GhsaRecord:
-    return GhsaRecord(
-        ghsa_id=ghsa_id,
-        cve_id=cve_id,
-        severity=severity,
-        summary=None,
-        published_at=None,
-        updated_at=None,
-        withdrawn_at=withdrawn,
-        cvss_v3_score=v3,
-        cvss_v3_vector=None,
-        cvss_v4_score=v4,
-        cvss_v4_vector=None,
-        packages=[],
-        html_url=None,
-        raw={},
-    )
-
-
 def test_collect_inputs_for_cve(store):
     store.upsert_cve(
-        _cve("CVE-2099-0001", cvss_v31_score=6.0, cpe_criteria=[NPM_PKG], vuln_status="Deferred"),
+        make_cve(
+            "CVE-2099-0001", cvss_v31_score=6.0, cpe_criteria=[NPM_PKG], vuln_status="Deferred"
+        ),
         "t",
     )
     store.upsert_kev(KevRecord("CVE-2099-0001", None, None, None, None, None, None), "t")
     store.upsert_epss(EpssRecord("CVE-2099-0001", 0.2, 0.95, "2099-01-01"), "t")
-    store.upsert_ghsa(_ghsa("GHSA-a", "CVE-2099-0001", "medium", v3=8.1), "t")
-    store.upsert_ghsa(_ghsa("GHSA-b", "CVE-2099-0001", "high", v4=7.0, v3=9.9), "t")
+    store.upsert_ghsa(make_ghsa("GHSA-a", "CVE-2099-0001", "medium", v3=8.1), "t")
+    store.upsert_ghsa(make_ghsa("GHSA-b", "CVE-2099-0001", "high", v4=7.0, v3=9.9), "t")
     # withdrawn は数えない
-    store.upsert_ghsa(_ghsa("GHSA-c", "CVE-2099-0001", "critical", v3=10.0, withdrawn="x"), "t")
+    store.upsert_ghsa(make_ghsa("GHSA-c", "CVE-2099-0001", "critical", v3=10.0, withdrawn="x"), "t")
     inp = collect_inputs(store, "CVE-2099-0001")
     assert inp == Inputs(
         "CVE-2099-0001",
@@ -259,5 +220,5 @@ def test_collect_inputs_kev_only_and_missing(store):
 
 
 def test_collect_inputs_ghsa_with_cve_is_not_ghsa_subject(store):
-    store.upsert_ghsa(_ghsa("GHSA-d", "CVE-2099-0004", "high"), "t")
+    store.upsert_ghsa(make_ghsa("GHSA-d", "CVE-2099-0004", "high"), "t")
     assert collect_inputs(store, "GHSA-d") == Inputs("GHSA-d")
