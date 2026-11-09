@@ -1,6 +1,6 @@
 import httpx
 import respx
-from conftest import load_fixture
+from conftest import load_fixture, make_cve
 from typer.testing import CliRunner
 
 from vuln_signal import cli
@@ -8,10 +8,13 @@ from vuln_signal.sources import epss, ghsa, kev
 from vuln_signal.sources.nvd import BASE_URL
 from vuln_signal.store import Store
 
+NPM_PKG = "cpe:2.3:a:acme:widget:1.0.0:*:*:*:*:node.js:*:*"
+
 
 def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("VULN_SIGNAL_ENV_FILE", str(tmp_path / "nope"))
     monkeypatch.setenv("VULN_SIGNAL_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(tmp_path / "no-rules.toml"))
     monkeypatch.delenv("NVD_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
@@ -158,6 +161,7 @@ def test_sync_all_continues_after_failure(tmp_path, monkeypatch):
         < out.index("sync kev failed")
         < out.index("ghsa ")
         < out.index("epss model_date")
+        < out.index("classify diff")
     )
     s = Store.open(tmp_path / "data")
     try:
@@ -168,6 +172,8 @@ def test_sync_all_continues_after_failure(tmp_path, monkeypatch):
         assert epss_state["last_error"] is None
         # 応答 0 件なので cursor は None のまま（時刻を入れない）
         assert epss_state["cursor"] is None
+        # kev が失敗しても classify は走る
+        assert s.get_sync_state("classify")["last_error"] is None
     finally:
         s.close()
 
@@ -184,7 +190,8 @@ def test_sync_all_ok_dry_run(tmp_path, monkeypatch):
     respx.get(ghsa.BASE_URL).mock(return_value=httpx.Response(200, json=[]))
     res = CliRunner().invoke(cli.app, ["sync", "all", "--dry-run"])
     assert res.exit_code == 0, res.output
-    assert res.output.count("(dry-run, not written)") == 4
+    assert res.output.count("(dry-run, not written)") == 5
+    assert "classify diff rules_version" in res.output
     s = Store.open(tmp_path / "data")
     try:
         assert s.list_sync_state() == []
@@ -250,3 +257,49 @@ def test_sync_all_continues_when_client_creation_fails(tmp_path, monkeypatch):
     assert token not in res.output
     assert routes["nvd"].call_count == routes["kev"].call_count == 1
     assert "epss model_date" in res.output
+
+
+def _seed_classify(tmp_path):
+    s = Store.open(tmp_path / "data")
+    try:
+        s.upsert_cve(make_cve("CVE-2099-0001", cvss_v31_score=9.8, cpe_criteria=[NPM_PKG]), "x")
+        s.add_event("CVE-2099-0001", "x", "first_seen", None, None, "nvd")
+        s.upsert_cve(make_cve("CVE-2099-0002", cvss_v31_score=9.8), "x")
+        s.add_event("CVE-2099-0002", "x", "first_seen", None, None, "nvd")
+    finally:
+        s.close()
+
+
+def test_classify_dry_run_then_write(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    _seed_classify(tmp_path)
+    res = CliRunner().invoke(cli.app, ["classify", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert "(dry-run, not written)" in res.output
+    assert "targets: 2" in res.output
+    assert "tier P1: 1" in res.output and "tier excluded: 1" in res.output
+    assert "tier_changed new: 1" in res.output
+    s = Store.open(tmp_path / "data")
+    try:
+        assert s.count_rows("tier") == 0
+    finally:
+        s.close()
+
+    res = CliRunner().invoke(cli.app, ["classify"])
+    assert res.exit_code == 0, res.output
+    assert res.output.startswith("classify diff rules_version ")
+    res = CliRunner().invoke(cli.app, ["classify"])
+    assert "targets: 0" in res.output
+    res = CliRunner().invoke(cli.app, ["classify", "--all"])
+    assert res.output.startswith("classify all ")
+    assert "targets: 2" in res.output and "tier_changed new: 0" in res.output
+
+
+def test_classify_bad_rules_file_exit_1(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    rules = tmp_path / "rules.toml"
+    rules.write_text("[thresholds]\nunknown = 1\n", encoding="utf-8")
+    monkeypatch.setenv("VULN_SIGNAL_RULES_FILE", str(rules))
+    res = CliRunner().invoke(cli.app, ["classify"])
+    assert res.exit_code == 1
+    assert "classify failed: RulesError: unknown key in thresholds: unknown" in res.output
