@@ -42,7 +42,7 @@ subject は CVE ID と、CVE の無い GHSA の GHSA ID。
 - 送るのは `description_en`（`JEV_MAX_CHARS` 字で切る）だけ。1 CVE = 1 リクエスト（質問 2 つ）。
 - `stack` が `none` 以外で confidence ≥ `JEV_MIN_CONFIDENCE` なら `candidate = 1`。0→1 で `triage_candidate`、1→0 で `triage_candidate_cleared`（`source` は `jev`）。
 - 429 は Retry-After 秒待って再試行（無ければ 10 / 30 / 60 秒）、5xx / 529 / 接続エラーも再試行。再試行切れなどの 1 件の失敗はその CVE を飛ばして `failed` に数え、
-  1 件でもあれば cursor を進めない（成功分は書く。次回は失敗した CVE だけ送り直す）。401 / 400 / 422 は全体を失敗にする（exit 1、`last_error` に残す）。
+  1 件でもあれば cursor を進めず `last_error` に `triage: N/M requests failed; last: ...` を残す（exit 0。成功分は書く。次回は失敗した CVE だけ送り直す）。401 / 400 / 422 は全体を失敗にする（exit 1、`last_error` に残す）。
 - `TYPESAFE_API_KEY` が無ければ `triage skipped: TYPESAFE_API_KEY not set` を出して何もしない（exit 0）。`--dry-run` は API を呼ばず、キーが無くても対象件数と先頭 5 件の ID を出す。
 - `report` に `triage rows`、窓内の候補数と stack 別の内訳、候補のうち tier 行があるもの、tier 行があるのに候補でないもの（見逃し）を出す。
 

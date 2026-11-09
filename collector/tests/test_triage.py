@@ -237,7 +237,11 @@ def test_retry_exhausted_skips_cve_and_keeps_cursor(store, fake_sleep, caplog):
     assert store.get_llm_triage("CVE-2099-0002") is not None
     state = store.get_sync_state("triage")
     assert state["cursor"] is None
-    assert state["last_ok_at"] == "2099-01-02T00:00:00Z"
+    assert state["last_ok_at"] is None
+    assert state["last_run_at"] == "2099-01-02T00:00:00Z"
+    assert state["last_error"] == (
+        "triage: 1/2 requests failed; last: JevError: HTTP 429 (after 3 retries)"
+    )
     assert "CVE-2099-0001" in caplog.text
 
     # 次回は失敗した CVE だけ送り直す
@@ -245,7 +249,10 @@ def test_retry_exhausted_skips_cve_and_keeps_cursor(store, fake_sleep, caplog):
     assert (res.targets, res.requested, res.failed) == (1, 1, 0)
     assert store.get_llm_triage("CVE-2099-0001") is not None
     # 前回の triage_candidate（id 3）までが処理済み
-    assert store.get_sync_state("triage")["cursor"] == "3"
+    state = store.get_sync_state("triage")
+    assert state["cursor"] == "3"
+    assert state["last_error"] is None
+    assert state["last_ok_at"] == "2099-01-02T01:00:00Z"
 
 
 @respx.mock
@@ -285,3 +292,20 @@ def test_key_not_in_last_error_or_logs(store, fake_sleep, caplog, monkeypatch):
     assert KEY not in caplog.text
     error = store.get_sync_state("triage")["last_error"]
     assert error == "RuntimeError: write failed ***"
+
+
+@respx.mock
+def test_partial_failure_last_error_hides_key(store, fake_sleep):
+    _put(store, "CVE-2099-0001", desc="one")
+    _put(store, "CVE-2099-0002", desc="two")
+    respx.post(BASE_URL).mock(
+        side_effect=_by_state({"one": _ok(), "two": httpx.ConnectError("refused " + KEY)})
+    )
+    res = _run(store, fake_sleep)
+    assert (res.requested, res.failed) == (2, 1)
+    assert store.get_llm_triage("CVE-2099-0001") is not None
+    state = store.get_sync_state("triage")
+    assert state["cursor"] is None
+    assert state["last_error"] == (
+        "triage: 1/2 requests failed; last: JevError: ConnectError: refused *** (after 3 retries)"
+    )

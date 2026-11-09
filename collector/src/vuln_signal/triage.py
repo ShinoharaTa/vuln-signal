@@ -143,6 +143,7 @@ def triage(
     説明文の hash が既存行と同じものは送らない。CVE ID 順に max_per_run 件まで。
     cursor は処理した最大の cve_event.id（上限で残した CVE があればその最小イベント id の手前）。
     1 件の失敗はスキップして数え、1 件でもあれば cursor を進めない（成功分は書く）。
+    そのときは失敗件数と最後のエラーを last_error に残す（例外にはしない）。
     JevFatalError（401 / 400 / 422）は全体の失敗にする（それまでの成功分は書いたまま）。
     dry_run では対象を数えるだけで API を呼ばず、書かない（client は None でよい）。
     失敗時は sync_state の last_run_at と last_error だけを更新し、例外を投げ直す。
@@ -166,6 +167,7 @@ def triage(
         if client is None:
             raise ValueError("client is required unless dry_run")
 
+        last_error = ""
         for row, desc_hash in batch:
             result.requested += 1
             try:
@@ -174,6 +176,7 @@ def triage(
                 raise
             except JevError as e:
                 result.failed += 1
+                last_error = client.redact(f"{type(e).__name__}: {e}")
                 log.warning("triage %s failed: %s", row["id"], e)
                 continue
             if _record(store, row["id"], desc_hash, resp, min_confidence, now_s):
@@ -183,7 +186,12 @@ def triage(
             result.input_tokens += resp.input_tokens or 0
 
         if result.failed:
-            store.mark_sync_ok(SOURCE_TRIAGE, now_s, keep_cursor=True)
+            # cursor は据え置き（mark_sync_error は cursor を触らない）
+            store.mark_sync_error(
+                SOURCE_TRIAGE,
+                now_s,
+                f"triage: {result.failed}/{result.requested} requests failed; last: {last_error}",
+            )
         else:
             # 上限で残した CVE のイベントを次回も拾えるようにする
             new_cursor = min(row["event_id"] for row, _ in rest) - 1 if rest else upto
